@@ -182,7 +182,13 @@ Item {
       if (code === 0) {
         try { data = JSON.parse(queryProc.out) } catch (e) { err = "unreadable answer from the helper" }
       } else {
-        err = queryProc.errText.split("\n")[0] || ("the helper exited with " + code)
+        // The helper reports its errors as JSON on stdout; surface those
+        // rather than a bare exit code.
+        try {
+          var body = JSON.parse(queryProc.out)
+          err = String(body.error || (Array.isArray(body.errors) ? body.errors.join("; ") : "") || "")
+        } catch (e) {}
+        if (!err) err = queryProc.errText.split("\n")[0] || ("the helper exited with " + code)
       }
       if (cb) cb(data, err)
       Qt.callLater(root.pumpQueries)
@@ -191,7 +197,8 @@ Item {
 
   Process {
     id: fetchProc
-    command: [root.helperPath, "latest", "-addr", root.addr]
+    command: [root.helperPath, "latest"].concat(
+      root.selectedCoin !== "" ? [root.selectedCoin] : []).concat(["-addr", root.addr])
     clearEnvironment: true
     environment: root.childEnv
     stdout: StdioCollector {
@@ -234,11 +241,20 @@ Item {
     clearEnvironment: true
     environment: root.childEnv
     property string pending: ""
+    property string out: ""
+    property bool stderrSet: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: mutateProc.out = String(text || "")
+    }
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         var msg = String(text || "").trim()
-        if (msg !== "") root.lastError = msg.split("\n")[0]
+        if (msg !== "") {
+          root.lastError = msg.split("\n")[0]
+          mutateProc.stderrSet = true
+        }
       }
     }
     onExited: function (code, status) {
@@ -247,8 +263,19 @@ Item {
         root.showToast(mutateProc.pending)
         root.refresh()
         root.changed()
+      } else {
+        // The helper reports its errors as JSON on stdout; surface them,
+        // then fall back to stderr, then to the exit code.
+        var shown = ""
+        try {
+          var body = JSON.parse(mutateProc.out)
+          shown = String(body.error || (Array.isArray(body.errors) ? body.errors.join("; ") : "") || "")
+        } catch (e) {}
+        if (shown !== "") root.lastError = shown
+        else if (!mutateProc.stderrSet) root.lastError = "the helper exited with " + code
       }
       mutateProc.pending = ""
+      mutateProc.stderrSet = false
       Qt.callLater(root.pumpMutations)
     }
   }
@@ -314,17 +341,42 @@ Item {
   ]
   property string view: "dashboard"
   property int navCursor: 0
+  // The report the detail views show: empty means the latest for the
+  // selected coin.
+  property string selectedReportId: ""
+  // The coin the dashboard tabs picked; empty means the daemon's default
+  // (the newest report across coins).
+  property string selectedCoin: ""
+
+  function selectCoin(coin) {
+    root.selectedCoin = String(coin || "")
+    root.refresh()
+  }
+
+  function showReport(id, viewId) {
+    root.selectedReportId = String(id || "")
+    root.setView(viewId || "playbooks")
+  }
+
+  function clearReportSelection() { root.selectedReportId = "" }
+
+  function viewFile(id) {
+    switch (id) {
+    case "dashboard": return "Dashboard.qml"
+    case "playbooks": return "Playbooks.qml"
+    case "predictions": return "Predictions.qml"
+    case "coins": return "Coins.qml"
+    case "history": return "History.qml"
+    case "settings": return "Settings.qml"
+    case "privacy": return "DataPrivacy.qml"
+    }
+    return "Dashboard.qml"
+  }
 
   function setView(id) {
     for (var i = 0; i < views.length; i++) {
       if (views[i].id === id) { root.view = id; root.navCursor = i; return }
     }
-  }
-
-  function viewLabel(id) {
-    for (var i = 0; i < views.length; i++)
-      if (views[i].id === id) return views[i].label
-    return id
   }
 
   // ---- shell contract
@@ -367,6 +419,12 @@ Item {
       focus: true
 
       Keys.onPressed: function (e) {
+        // A form inside the open view owns the keys while a field has
+        // focus; otherwise bare keys are commands.
+        if (contentLoader.item && contentLoader.item.formFocused === true) return
+        // The open view gets first refusal (row cursors, its own verbs).
+        if (contentLoader.item && typeof contentLoader.item.handleKey === "function"
+            && contentLoader.item.handleKey(e)) { e.accepted = true; return }
         if (e.key === Qt.Key_Escape) {
           root.requestClose()
           e.accepted = true; return
@@ -464,78 +522,27 @@ Item {
             }
           }
 
-          // The latest report at a glance. The per-section screens land in
-          // the following tasks; this proves the pipeline end to end.
-          Column {
-            anchors.centerIn: parent
+          // The views. Each consumes the injected `app` (this item) and
+          // renders its own slice of the report; the two placeholders above
+          // stay for the not-running and nothing-to-show states.
+          Loader {
+            id: contentLoader
+            anchors.fill: parent
+            anchors.margins: Style.space(20)
+            anchors.bottomMargin: (messageLine.showing ? messageLine.height : 0) + Style.space(20)
             visible: root.running && root.hasReport
-            spacing: Style.space(12)
-            width: Math.min(parent.width - Style.space(48), Style.space(560))
-
-            Text {
-              text: root.viewLabel(root.view).toUpperCase()
-              color: root.dimmer
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
+            source: visible ? "views/" + root.viewFile(root.view) : ""
+            onLoaded: {
+              if (item && "app" in item) item.app = root
+              contentLoader.opacity = 0
+              contentLoader.opacity = 1
             }
-            Text {
-              text: root.report && root.report.coin ? String(root.report.coin) : ""
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.display
-              font.bold: true
-            }
-            Row {
-              spacing: Style.space(16)
-              Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: isFinite(root.price) ? "$" + root.formatPrice(root.price) : "—"
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.heading
-              }
-              Rectangle {
-                anchors.verticalCenter: parent.verticalCenter
-                width: biasChip.implicitWidth + Style.space(20)
-                height: biasChip.implicitHeight + Style.space(8)
-                radius: height / 2
-                color: "transparent"
-                border.width: Style.normalBorderWidth
-                border.color: root.biasColor
-                Text {
-                  id: biasChip
-                  anchors.centerIn: parent
-                  text: root.biasLabel === "" ? "UNSET" : root.biasLabel
-                  color: root.biasColor
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                }
-              }
-            }
-            Text {
-              width: parent.width
-              wrapMode: Text.WordWrap
-              text: "Generated " + (root.report && root.report.generated_at ? String(root.report.generated_at) : "unknown")
-                + " · prediction " + (root.predictionAvailable ? "available" : "unavailable")
-                + (root.generating.length > 0 ? " · regenerating " + root.generating.join(", ") : "")
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-            Text {
-              width: parent.width
-              wrapMode: Text.WordWrap
-              visible: root.llmKeyMissing
-              text: "No LLM key configured (no key): set " + root.llmKeyEnv + " before starting the daemon to ground the prediction blocks."
-              color: root.urgent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
+            Behavior on opacity { NumberAnimation { duration: root.moveMs; easing.type: Easing.OutCubic } }
           }
 
           // The message line: an error from the last command, or a toast.
           Rectangle {
+            id: messageLine
             anchors.bottom: parent.bottom
             anchors.left: parent.left
             anchors.right: parent.right
