@@ -1,3 +1,6 @@
+import json
+import os
+
 import pytest
 
 from engine import data
@@ -23,6 +26,53 @@ def test_cached_candles_used_when_both_sources_fail(monkeypatch, tmp_path):
     monkeypatch.setattr(data, "_binance_get", lambda *a, **k: (_ for _ in ()).throw(RuntimeError()))
     monkeypatch.setattr(data, "_yfinance_candles", lambda *a, **k: (_ for _ in ()).throw(RuntimeError()))
     assert data.fetch_candles("BTC/USDT", "15m", cache_dir=tmp_path)[0].close == 1.5
+
+
+def test_successful_binance_fetch_persists_cache_contents(monkeypatch, tmp_path):
+    """A successful fetch writes `cache_dir/<SYMBOL>_<TF>.json` verbatim."""
+    rows = [
+        [1, "100", "102", "99", "101", "10", 1, 1, "0", 0, 0, "0"],
+        [2, "101", "103", "100", "102", "11", 2, 2, "0", 0, 0, "0"],
+    ]
+    monkeypatch.setattr(data, "_binance_get", lambda *a, **k: rows)
+    candles = data.fetch_candles("BTC/USDT", "15m", cache_dir=tmp_path)
+
+    cache = tmp_path / "BTC_USDT_15m.json"
+    assert cache.exists()
+    stored = json.loads(cache.read_text(encoding="utf-8"))
+    assert stored == [
+        {
+            "timestamp": c.timestamp,
+            "open": c.open,
+            "high": c.high,
+            "low": c.low,
+            "close": c.close,
+            "volume": c.volume,
+        }
+        for c in candles
+    ]
+
+
+def test_cache_hit_does_not_rewrite_cache(monkeypatch, tmp_path):
+    """A cache-hit fetch returns the stored candles and leaves the file alone."""
+    rows = [[1, "100", "102", "99", "101", "10", 1, 1, "0", 0, 0, "0"]]
+    monkeypatch.setattr(data, "_binance_get", lambda *a, **k: rows)
+    data.fetch_candles("BTC/USDT", "15m", cache_dir=tmp_path)
+
+    cache = tmp_path / "BTC_USDT_15m.json"
+    before_bytes = cache.read_bytes()
+    # Pin mtime in the past so any rewrite is detectable regardless of
+    # filesystem timestamp granularity.
+    pinned = 1_000_000_000
+    os.utime(cache, (pinned, pinned))
+
+    monkeypatch.setattr(data, "_binance_get", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(data, "_yfinance_candles", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    candles = data.fetch_candles("BTC/USDT", "15m", cache_dir=tmp_path)
+
+    assert candles[0].close == 101.0  # served from the cache
+    assert cache.read_bytes() == before_bytes  # content untouched
+    assert cache.stat().st_mtime_ns == pinned * 1_000_000_000  # never rewritten
 
 
 def test_fetch_quotes_best_effort(monkeypatch):
