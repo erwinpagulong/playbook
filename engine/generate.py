@@ -21,7 +21,8 @@ Candle fetch failures fall back to the local JSON cache via
 `engine.data.fetch_candles`; when the fetch layer itself raised, the cache
 is read directly before a timeframe is declared missing. Missing
 timeframes are skipped and reported in ``error``. When *no* timeframe has
-any data, `DataUnavailable` is raised — there is nothing to report on.
+any data, the run returns ``{"report": None, "error": reason}`` — the
+function never raises for expected operational failures.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ import threading
 from pathlib import Path
 
 from engine import data, llm
-from engine.data import TIMEFRAMES, DataUnavailable
+from engine.data import TIMEFRAMES
 from engine.indicators import analyze_timeframe
 from engine.llm import LLMUnavailable
 from engine.levels import build_levels
@@ -145,7 +146,9 @@ def _generate(coin: str, config: dict, data_dir: Path) -> dict:
         analysis[timeframe] = analyze_timeframe(candles)
 
     if not analysis:
-        raise DataUnavailable(f"no candle data for {coin} in any timeframe")
+        reason = f"no candle data for {coin} in any timeframe"
+        log.warning("%s", reason)
+        return {"report": None, "error": reason}
 
     quotes = _quotes_for(coin)
     reference = float(next(iter(analysis.values())).get("price") or 0.0)
@@ -178,13 +181,14 @@ def generate_report(coin: str, config: dict, data_dir: Path) -> dict:
 
     Runs are serialized by a module-level lock: concurrent callers queue
     end to end, so report ids stay distinct. Returns
-    ``{"report": <dict>, "error": <str | None>}`` where ``error`` is
+    ``{"report": <dict | None>, "error": <str | None>}`` where ``error`` is
     ``None`` on a clean run and a short reason otherwise (missing
     timeframes, LLM failure, or validation failure); the report is saved
     either way with ``prediction.available`` reflecting the LLM outcome.
 
-    Raises `DataUnavailable` when no timeframe has any candle data — both
-    the fetch layer and the cache failed everywhere.
+    Never raises for expected operational failures: when no timeframe has
+    any candle data (both the fetch layer and the cache failed
+    everywhere), returns ``{"report": None, "error": reason}``.
     """
     with _generation_lock:
         return _generate(coin, config, Path(data_dir))

@@ -133,6 +133,19 @@ def test_fetch_failure_uses_cache(monkeypatch, tmp_path):
     assert result["error"]
 
 
+# --- fix round 1: total data failure returns an error, never raises ---------
+
+def test_total_data_failure_returns_error_without_report(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        data, "fetch_candles", lambda *a, **k: (_ for _ in ()).throw(DataUnavailable())
+    )
+    result = generate_report("BTC/USDT", load_config(None), tmp_path)
+    assert result["report"] is None
+    assert isinstance(result["error"], str) and result["error"]
+    # nothing was persisted: there is no report to save
+    assert list_reports(tmp_path) == []
+
+
 # --- brief: serialized generation -------------------------------------------
 
 def test_generate_is_serialized(monkeypatch, tmp_path):
