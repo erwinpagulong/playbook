@@ -122,3 +122,65 @@ def test_empty_analysis_returns_empty_map():
         "key_levels": {"support": [], "resistance": []},
         "positions": [],
     }
+
+
+# --- degenerate rows: one/two-level sides must not render a fake trade -----
+
+def _mini_analysis(bollinger: dict) -> dict:
+    """A 15m payload with only the supplied Bollinger values and price=100."""
+    return {
+        "15m": {
+            "price": 100,
+            "bollinger": bollinger,
+            "moving_averages": {},
+        }
+    }
+
+
+def test_one_level_each_side_produces_no_positions():
+    # A sole support and a sole resistance clamp entry/stop (and tp1/tp2) onto
+    # the same price, yielding entry == tp1 == tp2 == stop, rr 0.
+    levels = build_levels(_mini_analysis({"lower": 90, "upper": 110}), 100)
+    assert levels["positions"] == []
+
+
+def test_two_levels_one_side_skips_collapsed_row():
+    # Support has two levels, resistance one: the LONG bounce's tp1/tp2 clamp
+    # onto the same resistance level, and the SHORT fade's entry/stop clamp
+    # onto the same resistance level. Both degenerate rows must be dropped.
+    levels = build_levels(
+        _mini_analysis({"lower": 90, "mid": 95, "upper": 110}), 100
+    )
+    for p in levels["positions"]:
+        prices = (p["entry"], p["tp1"], p["tp2"], p["stop"])
+        assert len(set(prices)) == 4, p
+        assert p["rr"] > 0, p
+    assert not [
+        p for p in levels["positions"]
+        if p["direction"] == "LONG" and p["label"] == "bounce"
+    ]
+
+
+def test_positions_are_distinct_directional_and_positive_rr():
+    levels = build_levels(sample_analysis(), 64053)
+    assert levels["positions"]  # the fixture still produces real rows
+    for p in levels["positions"]:
+        e, t1, t2, s = p["entry"], p["tp1"], p["tp2"], p["stop"]
+        assert len({e, t1, t2, s}) == 4, p
+        assert p["rr"] > 0, p
+        if p["direction"] == "LONG":
+            assert s < e < t1 <= t2, p
+        else:
+            assert t2 <= t1 < e < s, p
+        lo, hi = p["zone"].split("-")
+        assert int(lo) < int(hi), p  # never a "102-102" band
+
+
+def test_zone_widens_to_other_side_when_entry_side_has_one_level():
+    from engine.levels import _zone
+
+    # Same-side neighbor clamps to the entry; the band must widen to the
+    # other side's nearest level rather than emit "90-90".
+    zone = _zone(("S", 0), 90.0, ([90.0], [110.0]))
+    lo, hi = zone.split("-")
+    assert int(lo) < int(hi), zone

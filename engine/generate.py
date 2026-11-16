@@ -183,8 +183,9 @@ def generate_report(coin: str, config: dict, data_dir: Path) -> dict:
     end to end, so report ids stay distinct. Returns
     ``{"report": <dict | None>, "error": <str | None>}`` where ``error`` is
     ``None`` on a clean run and a short reason otherwise (missing
-    timeframes, LLM failure, or validation failure); the report is saved
-    either way with ``prediction.available`` reflecting the LLM outcome.
+    timeframes, LLM failure, or validation failure); when at least one
+    timeframe produced data, the deterministic report is still saved with
+    ``prediction.available`` reflecting the LLM outcome.
 
     Never raises for expected operational failures: when no timeframe has
     any candle data (both the fetch layer and the cache failed

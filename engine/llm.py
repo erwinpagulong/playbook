@@ -25,6 +25,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
+import time
 
 import requests
 
@@ -52,6 +54,23 @@ PRICE_KEYS = frozenset(
 
 #: Psychological round levels: offsets of ±10 steps around the reference price.
 PSYCH_OFFSETS = range(-10, 11)
+
+#: Bounded retries for transient transport/timeout/5xx failures only. A missing
+#: key (checked before the loop) and an invalid JSON reply (parsed after it)
+#: are never retried. The key value is never part of any message or log.
+LLM_MAX_RETRIES = 2
+LLM_RETRY_BACKOFF_S = 0.25
+
+#: A price-like token in free text: 4+ integer digits, optionally comma-grouped
+#: and/or decimal. Used to catch invented prices in the narrative prose, which
+#: the scenario low/high check alone does not cover.
+PRICE_TOKEN_RE = re.compile(
+    r"(?<![0-9A-Za-z_.])(?:\d{1,3}(?:,\d{3})+|\d{4,})(?:\.\d+)?(?![0-9A-Za-z_.])"
+)
+
+#: A label just before a number that marks it as an indicator reading (RSI,
+#: MACD, ATR) rather than a price.
+_INDICATOR_LABEL_RE = re.compile(r"(?i)\b(?:rsi|macd|atr)\b[^0-9]{0,16}$")
 
 
 class LLMUnavailable(Exception):
@@ -97,24 +116,49 @@ def _chat_completion(llm_config: dict, prompt: str) -> str:
     return payload["choices"][0]["message"]["content"]
 
 
+def _is_transient_http(exc: requests.RequestException) -> bool:
+    """True for transport/timeouts and 429/5xx; false for other 4xx replies.
+
+    Transport errors carry no response and are treated as transient. HTTP
+    errors are inspected by status so a client error (e.g. 401 from a bad key)
+    is not needlessly retried.
+    """
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is None:
+        return True
+    return status == 429 or status >= 500
+
+
 def call_llm(llm_config: dict, prompt: str) -> dict:
     """Call the configured chat endpoint and return the parsed JSON reply.
 
     Raises ``LLMUnavailable`` when the API key env var is missing/empty, when
-    the HTTP call fails, or when the reply is not a JSON object. The key
-    value never appears in any exception message.
+    the HTTP call fails, or when the reply is not a JSON object. Transient
+    transport/timeout/5xx failures get bounded retries with short backoff;
+    a missing key and invalid JSON are never retried. The key value never
+    appears in any exception message.
     """
     key_env = llm_config.get("api_key_env") or ""
     if not (os.environ.get(key_env) or "").strip():
         raise LLMUnavailable(
             f"API key environment variable {key_env!r} is missing or empty"
         )
-    try:
-        raw = _chat_completion(llm_config, prompt)
-    except LLMUnavailable:
-        raise
-    except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as exc:
-        raise LLMUnavailable(f"LLM call failed: {exc}") from exc
+    raw = None
+    for attempt in range(LLM_MAX_RETRIES + 1):
+        try:
+            raw = _chat_completion(llm_config, prompt)
+            break
+        except LLMUnavailable:
+            raise
+        except requests.RequestException as exc:
+            if attempt >= LLM_MAX_RETRIES or not _is_transient_http(exc):
+                raise LLMUnavailable(f"LLM call failed: {exc}") from exc
+            # Transport/timeout/5xx failures can be transient; wait a little
+            # longer each time, with a hard cap on attempts and delay.
+            time.sleep(LLM_RETRY_BACKOFF_S * (attempt + 1))
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise LLMUnavailable(f"LLM call failed: {exc}") from exc
 
     try:
         parsed = json.loads(raw) if isinstance(raw, str) else raw
@@ -289,11 +333,78 @@ def _iter_scenarios(scenarios: object):
                 yield "all", position, scenario
 
 
+def _narrative_strings(node: object):
+    """Every string value nested in `node` (dicts and lists), recursively."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _narrative_strings(value)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            yield from _narrative_strings(value)
+
+
+def _excluded_price_token(text: str, match: re.Match) -> bool:
+    """True for a numeric token that is obviously not a price: a percentage,
+    a ratio/probability, a plain four-digit year, or an indicator reading
+    explicitly labelled RSI/MACD/ATR.
+    """
+    start, end = match.span()
+    literal = match.group(0)
+    # "2.6%" / "65%" — a percentage, not a price.
+    if end < len(text) and text[end] == "%":
+        return True
+    # "2.6:1" / "60:40" — a ratio or odds, not a price.
+    if (
+        end < len(text)
+        and text[end] == ":"
+        and end + 1 < len(text)
+        and text[end + 1].isdigit()
+    ):
+        return True
+    # A bare four-digit year such as 2026.
+    if "," not in literal and "." not in literal and len(literal) == 4:
+        if 1900 <= int(literal) <= 2099:
+            return True
+    # An indicator value named just before the number: "RSI 4321", "ATR 2100".
+    if _INDICATOR_LABEL_RE.search(text[max(0, start - 32):start]):
+        return True
+    return False
+
+
+def _narrative_price_errors(prediction: dict, levels: list[float]) -> list[str]:
+    """Reject price-like numbers in prose that are not near an allowed level.
+
+    The scenario low/high check only covers those two fields; the prompt also
+    forbids any other invented price anywhere in the JSON. Numeric fields are
+    left to their own checks — this scans only string (narrative) values.
+    """
+    errors: list[str] = []
+    seen: set[str] = set()
+    for prose in _narrative_strings(prediction):
+        for match in PRICE_TOKEN_RE.finditer(prose):
+            if _excluded_price_token(prose, match):
+                continue
+            value = float(match.group(0).replace(",", ""))
+            if any(_near(value, level) for level in levels):
+                continue
+            token = match.group(0)
+            if token in seen:
+                continue
+            seen.add(token)
+            errors.append(
+                f"narrative price {token} is not within 0.5% of any allowed level"
+            )
+    return errors
+
+
 def validate_prediction(prediction: dict, allowed: list[float]) -> list[str]:
     """Return a list of grounding problems with `prediction`; empty = valid.
 
     Checks: every scenario low/high within 0.5% of an allowed level and
-    inside the allowed span, probabilities summing to 100 per horizon,
+    inside the allowed span, every price-like token in narrative prose within
+    0.5% of an allowed level, probabilities summing to 100 per horizon,
     confidence in 0..1, a present highest_conviction block, and no banned
     phrases ("75%", "guaranteed").
     """
@@ -362,5 +473,7 @@ def validate_prediction(prediction: dict, allowed: list[float]) -> list[str]:
     for phrase in BANNED_PHRASES:
         if phrase in text:
             errors.append(f"banned phrase {phrase!r} appears in the prediction")
+
+    errors.extend(_narrative_price_errors(prediction, levels))
 
     return errors

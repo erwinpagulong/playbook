@@ -241,3 +241,104 @@ def test_validator_groups_probabilities_by_horizon():
     errors = validate_prediction(p, [100.0, 200.0])
     # the 1-2w horizon does not sum to 100; the 24-48h group is also incomplete
     assert any("probabilit" in e for e in errors)
+
+
+# --- I2: free-text prices must be grounded ---------------------------------
+
+def _valid_prediction_base() -> dict:
+    return {
+        "highest_conviction": {"text": "x", "confidence": 0.6},
+        "scenarios": [
+            {"low": 100, "high": 200, "probability": 60},
+            {"low": 50, "high": 100, "probability": 40},
+        ],
+    }
+
+
+def test_validator_rejects_fabricated_prose_price():
+    p = _valid_prediction_base()
+    p["bottom_line"] = "Price could reach 71234 before the weekend — educational only."
+    errors = validate_prediction(p, [50.0, 100.0, 200.0])
+    assert any("narrative price" in e and "71234" in e for e in errors)
+
+
+def test_validator_accepts_prose_price_at_allowed_level():
+    p = {
+        "highest_conviction": {"text": "Range near 64945", "confidence": 0.6},
+        "scenarios": [
+            {"low": 63905, "high": 64945, "probability": 60},
+            {"low": 63500, "high": 63905, "probability": 40},
+        ],
+        "bottom_line": "A close above 64,945 confirms — educational only.",
+    }
+    assert validate_prediction(p, [63500.0, 63905.0, 64945.0]) == []
+
+
+def test_validator_ignores_non_price_tokens_in_prose():
+    p = _valid_prediction_base()
+    p["per_timeframe"] = {
+        "1D": "In 2026 the RSI read 4321 while ATR hovered near 2100; odds 2.6:1."
+    }
+    assert validate_prediction(p, [50.0, 100.0, 200.0]) == []
+
+
+# --- M6: bounded retries for transient failures only ------------------------
+
+def test_call_llm_retries_transient_timeout(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise requests.Timeout("timed out")
+        return '{"ok": true}'
+
+    monkeypatch.setattr(llm, "_chat_completion", flaky)
+    assert call_llm({"api_key_env": "OPENAI_API_KEY"}, "prompt") == {"ok": True}
+    assert calls["n"] == 3  # initial attempt + 2 retries
+
+
+def test_call_llm_does_not_retry_invalid_json(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    calls = {"n": 0}
+
+    def bad_json(*a, **k):
+        calls["n"] += 1
+        return "not json at all"
+
+    monkeypatch.setattr(llm, "_chat_completion", bad_json)
+    with pytest.raises(LLMUnavailable):
+        call_llm({"api_key_env": "OPENAI_API_KEY"}, "prompt")
+    assert calls["n"] == 1
+
+
+def test_call_llm_does_not_retry_missing_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    calls = {"n": 0}
+
+    def should_not_run(*a, **k):
+        calls["n"] += 1
+        return "{}"
+
+    monkeypatch.setattr(llm, "_chat_completion", should_not_run)
+    with pytest.raises(LLMUnavailable):
+        call_llm({"api_key_env": "OPENAI_API_KEY"}, "prompt")
+    assert calls["n"] == 0
+
+
+def test_call_llm_does_not_retry_client_http_error(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    calls = {"n": 0}
+    response = requests.Response()
+    response.status_code = 400
+
+    def bad_request(*a, **k):
+        calls["n"] += 1
+        raise requests.HTTPError("bad request", response=response)
+
+    monkeypatch.setattr(llm, "_chat_completion", bad_request)
+    with pytest.raises(LLMUnavailable):
+        call_llm({"api_key_env": "OPENAI_API_KEY"}, "prompt")
+    assert calls["n"] == 1
+

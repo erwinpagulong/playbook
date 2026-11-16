@@ -27,14 +27,26 @@ Then, as printed by the installer:
 ```bash
 omarchy-shell shell rescanPlugins          # let the shell discover the plugin
 omarchy plugin enable windong.cryptoplaybook
-export OPENAI_API_KEY=sk-...               # only needed for LLM predictions
 ```
+
+LLM predictions need an API key, and the daemon reads it from the environment at
+startup. Because the daemon is launched by Quickshell, the key must be in
+**Quickshell's own launch environment**: export `OPENAI_API_KEY` in the shell session
+that starts Omarchy/Quickshell (for example from your login shell profile) *before*
+starting the shell, then restart the shell so the daemon inherits the variable:
+
+```bash
+export OPENAI_API_KEY=sk-...               # only needed for LLM predictions
+# then restart Omarchy/Quickshell so the daemon picks the variable up
+```
+
+Exporting the key in a separate terminal after the shell is already running will not
+reach the daemon. Without the key in Quickshell's environment, only the deterministic
+playbooks are generated and the narrative prediction is skipped.
 
 The daemon starts with the Omarchy shell's background services and seeds two sample
 reports (BTC/USDT playbook + prediction) into an empty report store, so the panel
-has content on first launch. Set `OPENAI_API_KEY` before the first start to have real
-predictions generated immediately; without a key only the deterministic playbooks are
-generated and the narrative prediction is skipped.
+has content on first launch.
 
 ## Configure
 
@@ -68,7 +80,9 @@ atomically):
 Notes on the LLM configuration: the only environment variable read by default is
 `OPENAI_API_KEY`, and only because `llm.api_key_env` names it — the key value is
 placed in the `Authorization` header and is never logged, printed, stored in the
-config, or included in reports. To use a different provider or model, edit
+config, or included in reports. It must be exported into Quickshell's launch
+environment before the shell starts (see Install above), not just into a terminal.
+To use a different provider or model, edit
 `llm.base_url` / `llm.model` / `llm.api_key_env` / `llm.timeout_s` in
 `config.json` (or via `set-config`); `api_key_env` can name any environment
 variable you keep the key in. There are no `LLM_*` environment overrides.

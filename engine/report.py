@@ -204,10 +204,14 @@ def _levels_section(levels: dict) -> str:
 def _prediction_section(prediction: dict) -> str:
     data = prediction if isinstance(prediction, dict) else {}
     if not data.get("available"):
-        return (
+        message = (
             "Prediction: **not available** — no scenario model ran for this "
             "report."
         )
+        reason = str(data.get("reason") or "").strip()
+        if reason:
+            message += f" Reason: {reason}"
+        return message
     scenarios = data.get("scenarios") or []
     if not scenarios:
         return "Prediction: available, but no scenarios were recorded."

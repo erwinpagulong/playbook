@@ -128,6 +128,17 @@ def test_render_markdown_returns_source_markdown_verbatim():
     assert render_markdown(r) == "# Custom\n\ntext with **markdown**\n"
 
 
+def test_markdown_prediction_reason_is_emitted_when_unavailable():
+    r = new_report("BTC/USDT", {}, {}, {})
+    r["prediction"] = {
+        "available": False,
+        "reason": "prediction unavailable: API key is missing or empty",
+    }
+    md = render_markdown(r)
+    assert "not available" in md.lower()
+    assert "API key is missing or empty" in md
+
+
 def test_seed_samples_only_when_empty(tmp_path):
     seed_samples(tmp_path)
     assert len(list_reports(tmp_path)) == 2

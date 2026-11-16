@@ -46,3 +46,49 @@ def test_app_derives_theme_tokens():
     text = (ROOT / "App.qml").read_text()
     for token in ("Color.foreground", "Color.background", "Color.accent", "Color.urgent", "Style.normalBorderColor", "Style.font.family"):
         assert token in text
+
+
+def test_daemon_process_inherits_llm_key_environment():
+    # The daemon reads the LLM key from os.environ; the config stores only the
+    # variable's name. A cleared environment strips the exported key and makes
+    # predictions permanently unavailable.
+    text = (ROOT / "Service.qml").read_text()
+    daemon = text.split("id: daemon", 1)[1].split("function reap", 1)[0]
+    assert "clearEnvironment: false" in daemon
+    assert "clearEnvironment: true" not in daemon
+    assert "environment: root.childEnv" in daemon  # PATH/HOME/XDG still overridden
+
+
+def test_management_views_are_not_gated_on_has_report():
+    text = (ROOT / "App.qml").read_text()
+    # Coins, Settings and Data & Privacy must open with an empty store.
+    gate = text.split("readonly property bool needsReport", 1)[1].split(
+        "readonly property string primaryCoin", 1
+    )[0]
+    for view in ("coins", "settings", "privacy"):
+        assert f'case "{view}"' in gate
+    loader = text.split("id: contentLoader", 1)[1].split("onStatusChanged", 1)[0]
+    assert "viewGateOpen" in loader
+    assert "hasReport" not in loader  # the Loader itself is not gated on a report
+    # The onboarding placeholder is suppressed while a management view is open.
+    onboarding = text.split("// Onboarding:", 1)[1].split("// The views.", 1)[0]
+    assert "root.needsReport" in onboarding
+
+
+def test_query_watchdog_clears_callback_and_pumps_queue():
+    text = (ROOT / "App.qml").read_text()
+    watchdog = text.split("interval: 15000", 1)[1].split("onRunningChanged", 1)[0]
+    block = watchdog.split("if (queryProc.running)", 1)[1].split(
+        "if (mutateProc.running)", 1
+    )[0]
+    assert "root.queryCallback = null" in block
+    assert "pumpQueries" in block
+
+
+def test_data_privacy_key_wording_is_accurate():
+    text = (ROOT / "views" / "DataPrivacy.qml").read_text()
+    # The key IS transmitted in the Authorization header; what is true is that
+    # it is never stored in config/reports/logs.
+    assert "Never sent: the API key" not in text
+    assert "Authorization header" in text
+    assert "never stored" in text.lower()

@@ -35,9 +35,11 @@ Item {
   }
 
   // Passed to every child. PATH reaches the interpreter in /usr/bin, HOME
-  // finds the configuration and the data directory. Nothing else: the
-  // daemon answers on loopback only, so proxy and trust variables have no
-  // business here.
+  // finds the configuration and the data directory. The CLI helpers (in
+  // App.qml) use this with a cleared environment; they never need the LLM key.
+  // The daemon below deliberately keeps the full launch environment so it
+  // inherits the exported variable that names the key (the config stores only
+  // the variable's *name*, and the daemon reads its value from os.environ).
   readonly property var childEnv: ({
     "PATH": "/usr/bin:/bin",
     "HOME": Quickshell.env("HOME") || "",
@@ -80,7 +82,12 @@ Item {
   Process {
     id: daemon
     command: [root.daemonPath]
-    clearEnvironment: true
+    // Keep Quickshell's launch environment: the LLM API key is present only
+    // as an exported variable there, and the daemon reads the value named by
+    // llm.api_key_env from os.environ. Clearing the environment would strip
+    // it and leave predictions permanently unavailable. PATH/HOME/XDG are
+    // still overridden below via `environment`.
+    clearEnvironment: false
     environment: root.childEnv
 
     onExited: function (code, status) {

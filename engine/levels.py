@@ -97,11 +97,35 @@ def _zone(
     ref: tuple[str, int], entry: float, levels: tuple[list[float], list[float]]
 ) -> str:
     """Entry band from the entry level outward to the next level on the same
-    side (farther from price), rendered as a whole-dollar range."""
+    side (farther from price), rendered as a whole-dollar range.
+
+    When the entry side holds only one level the same-side neighbor clamps
+    back onto the entry itself; widen the band to the nearest level on the
+    other side so a zone is never the degenerate "x-x".
+    """
     side = levels[0] if ref[0] == "S" else levels[1]
-    neighbor = side[min(ref[1] + 1, len(side) - 1)]
+    other = levels[1] if ref[0] == "S" else levels[0]
+    neighbor = side[min(ref[1] + 1, len(side) - 1)] if side else entry
+    if neighbor == entry and other:
+        neighbor = other[0]
     lo, hi = sorted((entry, neighbor))
     return f"{int(lo)}-{int(hi)}"
+
+
+def _valid_direction(
+    direction: str, entry: float, tp1: float, tp2: float, stop: float
+) -> bool:
+    """A row is a real trade only when its four prices are distinct and in
+    the direction's order; a clamped one-level side otherwise produces a
+    zero-reward row (entry == tp1 == tp2 == stop) that looks like a setup.
+    """
+    if len({entry, tp1, tp2, stop}) != 4:
+        return False
+    if direction == "LONG":
+        return stop < entry < tp1 <= tp2
+    if direction == "SHORT":
+        return tp2 <= tp1 < entry < stop
+    return False
 
 
 def _positions(
@@ -120,6 +144,13 @@ def _positions(
         if any(value is None for value in resolved):
             continue  # this timeframe lacks one side of the market entirely
         entry, tp1, tp2, stop = resolved
+        # Clamping a short side can collapse several references onto the same
+        # price; drop those degenerate rows rather than render a fake trade.
+        if not _valid_direction(direction, entry, tp1, tp2, stop):
+            continue
+        reward_risk = rr(entry, tp1, stop)
+        if reward_risk <= 0:
+            continue
         positions.append(
             {
                 "timeframe": timeframe,
@@ -129,7 +160,7 @@ def _positions(
                 "tp1": tp1,
                 "tp2": tp2,
                 "stop": stop,
-                "rr": rr(entry, tp1, stop),
+                "rr": reward_risk,
                 "zone": _zone(entry_ref, entry, levels),
             }
         )

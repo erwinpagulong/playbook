@@ -83,6 +83,19 @@ Item {
   // ---- derived report state
   readonly property var report: snap && snap.available === true ? snap.report : null
   readonly property bool hasReport: report !== null
+  // Only the report-driven views need a stored report. Coins, Settings and
+  // Data & Privacy are management screens and must stay reachable even when
+  // the store is empty (the "No playbook yet" state must not swallow them).
+  readonly property bool needsReport: {
+    switch (root.view) {
+    case "coins":
+    case "settings":
+    case "privacy":
+      return false
+    }
+    return true
+  }
+  readonly property bool viewGateOpen: root.running && (!root.needsReport || root.hasReport)
   readonly property string primaryCoin: {
     if (report && report.coin) return String(report.coin)
     var coins = status && Array.isArray(status.coins) ? status.coins : []
@@ -311,7 +324,13 @@ Item {
     onTriggered: {
       if (fetchProc.running) fetchProc.running = false
       if (statusProc.running) statusProc.running = false
-      if (queryProc.running) queryProc.running = false
+      if (queryProc.running) {
+        // Stopping the process must not leave a callback behind: a late
+        // response (or the next query) would otherwise hit a stale callback.
+        root.queryCallback = null
+        queryProc.running = false
+        Qt.callLater(root.pumpQueries)
+      }
       if (mutateProc.running) {
         mutateProc.running = false
         root.mutateQueue = []
@@ -500,10 +519,11 @@ Item {
             }
           }
 
-          // Onboarding: on the daemon but nothing to show yet.
+          // Onboarding: on the daemon but nothing to show yet. Only shown for
+          // report-driven views; management screens load regardless.
           Column {
             anchors.centerIn: parent
-            visible: root.running && !root.hasReport
+            visible: root.running && !root.hasReport && root.needsReport
             spacing: Style.space(10)
             width: Math.min(parent.width - Style.space(48), Style.space(520))
 
@@ -541,7 +561,7 @@ Item {
             anchors.fill: parent
             anchors.margins: Style.space(20)
             anchors.bottomMargin: (messageLine.showing ? messageLine.height : 0) + Style.space(20)
-            visible: root.running && root.hasReport && !root.viewFailed
+            visible: root.viewGateOpen && !root.viewFailed
             source: visible ? "views/" + root.viewFile(root.view) : ""
             onStatusChanged: {
               if (contentLoader.status === Loader.Error) {
@@ -561,7 +581,7 @@ Item {
           // the shell (sidebar, keys, message line) usable.
           Column {
             anchors.centerIn: parent
-            visible: root.running && root.hasReport && root.viewFailed
+            visible: root.viewGateOpen && root.viewFailed
             spacing: Style.space(10)
             width: Math.min(parent.width - Style.space(48), Style.space(520))
 

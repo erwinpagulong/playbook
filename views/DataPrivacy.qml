@@ -133,7 +133,7 @@ Item {
             title: "WHAT LEAVES THE MACHINE"
             Note { width: parent.width; text: "Out: public market data — candles from Binance (yfinance when Binance fails) and quote snapshots. These requests name only a public trading pair, nothing about you." }
             Note { width: parent.width; text: "Out: the report payload — indicators, levels, quotes — sent to the LLM endpoint in your config (llm.base_url, default api.openai.com) so it can write the prediction narrative. Change base_url in the config to keep that traffic elsewhere." }
-            Note { width: parent.width; text: "Never sent: the API key (it stays in the environment), your files, your identity. In: everything else, over 127.0.0.1." }
+            Note { width: parent.width; text: "The API key is sent only to your configured LLM endpoint, in the Authorization header, when a prediction is generated — it is never stored in config, reports, or logs, and never leaves that request. Your files and identity are never sent. Everything else travels over 127.0.0.1." }
           }
 
           TitledCard {
