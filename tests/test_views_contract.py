@@ -23,3 +23,25 @@ def test_data_privacy_has_export_and_delete():
 def test_onboarding_state_exists():
     text = (ROOT / "App.qml").read_text()
     assert "no key" in text.lower() or "onboarding" in text.lower()
+
+
+def test_playbooks_source_fallback_ignores_default_risk_rules():
+    text = (ROOT / "views/Playbooks.qml").read_text()
+    # risk_rules is always populated (the generator seeds DEFAULT_RISK_RULES),
+    # so it must not count as structured content — otherwise the plain-text
+    # source document never renders for seeded reports.
+    structured = next(
+        line for line in text.splitlines() if "readonly property bool structured:" in line
+    )
+    assert "riskRules" not in structured
+    assert "positions.length > 0" in structured and "sources.length > 0" in structured
+    # The plain-text fallback itself is still wired up.
+    assert "sourceDoc" in text and "hasSourceFallback" in text
+
+
+def test_app_loader_surfaces_view_load_errors():
+    text = (ROOT / "App.qml").read_text()
+    # A failed view load must reach the user, not a blank panel.
+    assert "Loader.Error" in text
+    assert "viewFailed" in text
+    assert "Retry" in text

@@ -347,6 +347,9 @@ Item {
   // The coin the dashboard tabs picked; empty means the daemon's default
   // (the newest report across coins).
   property string selectedCoin: ""
+  // Set when the open view fails to construct; the Loader then unloads it
+  // and an error state with a Retry affordance takes its place.
+  property bool viewFailed: false
 
   function selectCoin(coin) {
     root.selectedCoin = String(coin || "")
@@ -373,7 +376,14 @@ Item {
     return "Dashboard.qml"
   }
 
+  function viewLabel(id) {
+    for (var i = 0; i < views.length; i++)
+      if (views[i].id === id) return views[i].label
+    return id
+  }
+
   function setView(id) {
+    root.viewFailed = false
     for (var i = 0; i < views.length; i++) {
       if (views[i].id === id) { root.view = id; root.navCursor = i; return }
     }
@@ -524,20 +534,64 @@ Item {
 
           // The views. Each consumes the injected `app` (this item) and
           // renders its own slice of the report; the two placeholders above
-          // stay for the not-running and nothing-to-show states.
+          // stay for the not-running and nothing-to-show states. A view
+          // that fails to construct is surfaced below, never swallowed.
           Loader {
             id: contentLoader
             anchors.fill: parent
             anchors.margins: Style.space(20)
             anchors.bottomMargin: (messageLine.showing ? messageLine.height : 0) + Style.space(20)
-            visible: root.running && root.hasReport
+            visible: root.running && root.hasReport && !root.viewFailed
             source: visible ? "views/" + root.viewFile(root.view) : ""
+            onStatusChanged: {
+              if (contentLoader.status === Loader.Error) {
+                root.viewFailed = true
+                root.lastError = "could not load the " + root.viewLabel(root.view) + " screen"
+              }
+            }
             onLoaded: {
               if (item && "app" in item) item.app = root
               contentLoader.opacity = 0
               contentLoader.opacity = 1
             }
             Behavior on opacity { NumberAnimation { duration: root.moveMs; easing.type: Easing.OutCubic } }
+          }
+
+          // A failed view load: say so, offer a retry, and keep the rest of
+          // the shell (sidebar, keys, message line) usable.
+          Column {
+            anchors.centerIn: parent
+            visible: root.running && root.hasReport && root.viewFailed
+            spacing: Style.space(10)
+            width: Math.min(parent.width - Style.space(48), Style.space(520))
+
+            Text {
+              text: "This screen failed to load"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+            }
+            Text {
+              width: parent.width
+              wrapMode: Text.WordWrap
+              text: "The " + root.viewLabel(root.view) + " view could not be constructed. Your reports are intact — this is a display failure. Retry it, or switch to another section with the keys."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+            Button {
+              text: "Retry"
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              focusable: false
+              onClicked: {
+                root.viewFailed = false
+                root.lastError = ""
+              }
+            }
           }
 
           // The message line: an error from the last command, or a toast.

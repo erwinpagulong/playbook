@@ -50,7 +50,10 @@ Item {
   readonly property bool predictionAvailable: report && report.prediction && report.prediction.available === true
   readonly property string sourceDoc: report && typeof report.source_markdown === "string"
     ? report.source_markdown : ""
-  readonly property bool structured: positions.length > 0 || sources.length > 0 || riskRules.length > 0
+  // risk_rules are always present (the generator seeds the defaults), so
+  // they must not count as structured content — otherwise the plain-text
+  // fallback would never fire for seeded samples.
+  readonly property bool structured: positions.length > 0 || sources.length > 0
   readonly property bool hasSourceFallback: sourceDoc !== "" && !structured
 
   // ---- theme
