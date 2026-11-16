@@ -32,6 +32,7 @@ import logging
 import os
 import shutil
 import threading
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -209,8 +210,8 @@ class PlaybookHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         log.debug("%s %s", self.address_string(), fmt % args)
 
-    def _send(self, status: int, payload) -> None:
-        """Answer with a compact JSON body."""
+    def _send(self, status: int, payload, *, send_body: bool = True) -> None:
+        """Answer with a compact JSON body (suppressed for HEAD requests)."""
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
         )
@@ -218,7 +219,8 @@ class PlaybookHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if send_body:
+            self.wfile.write(body)
 
     def _json_body(self):
         """Parsed request body; a dict, or None when empty/invalid/non-object."""
@@ -403,6 +405,56 @@ class PlaybookHandler(BaseHTTPRequestHandler):
                     pass
             deleted += 1
         return deleted
+
+    # -- unsupported verbs --------------------------------------------------
+
+    def _method_not_allowed(self, *, send_body: bool = True) -> None:
+        """Shared JSON 405 for verbs this API does not implement."""
+        self._send(405, {"error": "method not allowed"}, send_body=send_body)
+
+    def do_PUT(self) -> None:
+        self._method_not_allowed()
+
+    def do_DELETE(self) -> None:
+        self._method_not_allowed()
+
+    def do_PATCH(self) -> None:
+        self._method_not_allowed()
+
+    def do_OPTIONS(self) -> None:
+        self._method_not_allowed()
+
+    def do_HEAD(self) -> None:
+        # HEAD answers the same JSON 405 but carries no body (HTTP
+        # semantics: headers only, Content-Length still declared).
+        self._method_not_allowed(send_body=False)
+
+    def send_error(self, code, message=None, explain=None) -> None:
+        """Protocol-level errors answer JSON, never the stock HTML page.
+
+        Covers everything that bypasses ``do_*``: unknown verbs (``TRACE``,
+        custom methods), bad request lines, and unsupported HTTP versions —
+        so every request gets JSON in/out, per the catch-all contract.
+        """
+        try:
+            default = HTTPStatus(code).phrase
+        except ValueError:
+            default = "error"
+        if message is None:
+            message = default
+        self.log_error("code %d, message %s", code, message)
+        self.send_response(code, message)
+        body = json.dumps(
+            {"error": message}, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        # ``command`` is None until the request line parses; only a real
+        # HEAD must omit the body.
+        if getattr(self, "command", None) != "HEAD":
+            self.wfile.write(body)
 
 
 # --------------------------------------------------------------------------

@@ -229,6 +229,32 @@ def test_post_only_route_under_get_is_405(client):
     assert "error" in response.json()
 
 
+@pytest.mark.parametrize(
+    "method,expected_status",
+    [
+        ("DELETE", 405),
+        ("PUT", 405),
+        ("PATCH", 405),
+        ("OPTIONS", 405),
+        ("HEAD", 405),
+        ("TRACE", 501),  # unknown verb -> send_error, still JSON
+    ],
+)
+def test_unsupported_verb_returns_json_not_html(addr, method, expected_status):
+    """No verb may fall through to BaseHTTPRequestHandler's HTML errors."""
+    request = urllib.request.Request(f"http://{addr}/api/status", method=method)
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        OPENER.open(request, timeout=10)
+    error = excinfo.value
+    assert error.code == expected_status  # non-2xx
+    assert "json" in (error.headers.get("Content-Type") or "")  # not HTML
+    body = error.read()
+    if method == "HEAD":  # headers only, no body (HTTP semantics)
+        assert body == b""
+    else:
+        assert "error" in json.loads(body)  # parseable JSON
+
+
 # --- daemon: latest / reports -----------------------------------------------
 
 
