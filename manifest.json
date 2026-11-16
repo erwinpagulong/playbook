@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "windong.cryptoplaybook",
+  "name": "Crypto Playbook",
+  "version": "0.1.0",
+  "author": "windong",
+  "description": "Local crypto playbooks and LLM-grounded predictions, generated on your machine and shown in the Omarchy bar",
+  "kinds": [
+    "bar-widget",
+    "panel",
+    "service"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml",
+    "panel": "App.qml",
+    "service": "Service.qml"
+  },
+  "barWidget": {
+    "displayName": "Crypto Playbook",
+    "description": "Latest crypto playbook at a glance; the dashboard opens as its own window",
+    "category": "Finance",
+    "defaults": {
+      "addr": "127.0.0.1:8099",
+      "refreshSec": 30
+    }
+  }
+}
