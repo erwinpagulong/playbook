@@ -146,7 +146,7 @@ def _yfinance_candles(symbol: str, timeframe: str, limit: int) -> list[Candle]:
             )
             .dropna(subset=["Close"])
         )
-    return [
+    candles = [
         Candle(
             int(ts.timestamp() * 1000),
             float(row["Open"]),
@@ -156,7 +156,8 @@ def _yfinance_candles(symbol: str, timeframe: str, limit: int) -> list[Candle]:
             float(row["Volume"]),
         )
         for ts, row in frame.iterrows()
-    ][: -limit or None]
+    ]
+    return candles[-limit:] if limit > 0 else candles
 
 
 def _cache_path(symbol: str, timeframe: str, cache_dir: Path | None) -> Path | None:

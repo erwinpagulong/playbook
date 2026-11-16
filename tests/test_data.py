@@ -39,3 +39,26 @@ def test_all_sources_and_cache_fail_raise_data_unavailable(monkeypatch, tmp_path
     monkeypatch.setattr(data, "_yfinance_candles", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no yfinance")))
     with pytest.raises(data.DataUnavailable):
         data.fetch_candles("BTC/USDT", "15m", cache_dir=tmp_path)
+
+
+def test_yfinance_candles_keeps_most_recent_and_resamples_4h(monkeypatch):
+    """The 4h fallback must return the newest buckets, oldest data dropped."""
+    import pandas as pd
+    import yfinance as yf
+
+    index = pd.date_range("2026-01-01", periods=8, freq="1h")
+    frame = pd.DataFrame(
+        {
+            "Open": [float(i) for i in range(8)],
+            "High": [float(i) + 1 for i in range(8)],
+            "Low": [float(i) for i in range(8)],
+            "Close": [float(i) for i in range(8)],
+            "Volume": [10.0] * 8,
+        },
+        index=index,
+    )
+    monkeypatch.setattr(yf, "download", lambda *a, **k: frame)
+    # 8 hourly bars -> two 4h buckets (closes 3.0 and 7.0); limit=1 keeps the
+    # most recent bucket only.
+    candles = data._yfinance_candles("BTC/USDT", "4h", limit=1)
+    assert [c.close for c in candles] == [7.0]
