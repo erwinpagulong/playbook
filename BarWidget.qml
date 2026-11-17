@@ -94,13 +94,21 @@ BarWidget {
     return parts.join(".")
   }
 
+  // "BTC/USDT" -> "BTC"; the base symbol is what a glance needs.
+  function symbolFor(coin) {
+    var parts = String(coin || "").split("/")
+    return parts.length > 0 ? parts[0] : ""
+  }
+
   function figureFor(coin) {
+    var sym = symbolFor(coin)
+    var prefix = sym !== "" ? sym + " " : ""
     var p = priceFor(coin)
-    if (!isFinite(p)) return "—"
+    if (!isFinite(p)) return prefix + "—"
     var s = formatPrice(p)
     var b = biasFor(coin)
     var label = b === "bullish" ? "LONG" : b === "bearish" ? "SHORT" : b === "flat" ? "FLAT" : ""
-    return label === "" ? s : s + " · " + label
+    return prefix + (label === "" ? s : s + " · " + label)
   }
 
   // Marquee geometry. The strip holds one copy per coin followed by the same
