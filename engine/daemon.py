@@ -11,6 +11,9 @@ small JSON API that the QML panel consumes through `engine.cli`:
     GET  /api/report?id=      one report by id
     GET  /api/config          effective config (defaults merged)
     POST /api/config          validate + atomically save; returns saved config
+    GET  /api/providers       one row per preset (masked key state only)
+    POST /api/providers/key   {"provider","key"} -> validate + store; {"ok":true}
+    POST /api/providers/clear-key  {"provider"} -> remove stored key
     GET  /api/export?dest=    copy the reports dir to dest (default
                               ~/Documents/crypto-playbook-export); returns path
     POST /api/delete-reports  remove generated (non-sample) reports; count
@@ -45,6 +48,8 @@ from engine.config import (
     save_config,
     validate_config,
 )
+from engine.keys import clear_key, set_key
+from engine.providers import is_valid_provider, provider_list
 
 log = logging.getLogger(__name__)
 
@@ -67,9 +72,18 @@ _GET_ROUTES = frozenset(
         "/api/report",
         "/api/config",
         "/api/export",
+        "/api/providers",
     }
 )
-_POST_ROUTES = frozenset({"/api/regenerate", "/api/config", "/api/delete-reports"})
+_POST_ROUTES = frozenset(
+    {
+        "/api/regenerate",
+        "/api/config",
+        "/api/delete-reports",
+        "/api/providers/key",
+        "/api/providers/clear-key",
+    }
+)
 
 
 def _first(query: dict, key: str) -> str | None:
@@ -260,6 +274,8 @@ class PlaybookHandler(BaseHTTPRequestHandler):
                 self._send_report(_first(query, "id"))
             elif route == "/api/config":
                 self._send(200, self.server.config)
+            elif route == "/api/providers":
+                self._send(200, provider_list(self.server.config))
             elif route == "/api/export":
                 self._send(200, self._export_to(_first(query, "dest")))
             elif route in _POST_ROUTES:
@@ -286,6 +302,8 @@ class PlaybookHandler(BaseHTTPRequestHandler):
             "llm_key_present": bool(
                 isinstance(key_env, str) and key_env and os.environ.get(key_env)
             ),
+            "provider": llm_config.get("provider"),
+            "fallback_provider": llm_config.get("fallback_provider"),
             "data_dir": str(self.server.data_dir),
         }
 
@@ -373,6 +391,33 @@ class PlaybookHandler(BaseHTTPRequestHandler):
                 self._send(200, self.server.config)
             elif route == "/api/delete-reports":
                 self._send(200, {"deleted": self._delete_reports()})
+            elif route == "/api/providers/key":
+                body = self._json_body()
+                if body is None:
+                    self._send(400, {"error": "body must be a JSON object"})
+                    return
+                provider = body.get("provider")
+                if not is_valid_provider(provider):
+                    self._send(400, {"error": "unknown provider"})
+                    return
+                key = body.get("key")
+                if not isinstance(key, str) or not key.strip():
+                    self._send(400, {"error": "key must be a non-empty string"})
+                    return
+                set_key(provider, key)
+                # The key itself is never echoed back.
+                self._send(200, {"ok": True})
+            elif route == "/api/providers/clear-key":
+                body = self._json_body()
+                if body is None:
+                    self._send(400, {"error": "body must be a JSON object"})
+                    return
+                provider = body.get("provider")
+                if not is_valid_provider(provider):
+                    self._send(400, {"error": "unknown provider"})
+                    return
+                clear_key(provider)
+                self._send(200, {"ok": True})
             elif route in _GET_ROUTES:
                 self._send(405, {"error": f"{route} only accepts GET"})
             else:

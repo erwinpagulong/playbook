@@ -16,6 +16,9 @@ command:
     playbook regenerate <coin>
     playbook set-config '<json>'
     playbook export [dest_dir]
+    playbook providers
+    playbook set-key <provider> <key>
+    playbook clear-key <provider>
 
 Loopback calls never consult proxy environment variables.
 """
@@ -100,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
     one.add_argument("report_id", metavar="id")
     sub.add_parser("status", parents=[addr_parent])
     sub.add_parser("coins", parents=[addr_parent])
+    sub.add_parser("providers", parents=[addr_parent])
+    set_key = sub.add_parser("set-key", parents=[addr_parent])
+    set_key.add_argument("provider")
+    set_key.add_argument("key")
+    clear_key_cmd = sub.add_parser("clear-key", parents=[addr_parent])
+    clear_key_cmd.add_argument("provider")
     regenerate = sub.add_parser("regenerate", parents=[addr_parent])
     regenerate.add_argument("coin", help="BASE/QUOTE like BTC/USDT")
     sub.add_parser("config", parents=[addr_parent])
@@ -125,6 +134,22 @@ def main(argv=None) -> int:
         path = "/api/status"
     elif args.command == "coins":
         path = "/api/coins"
+    elif args.command == "providers":
+        path = "/api/providers"
+    elif args.command == "set-key":
+        # The key travels in the request body only; the daemon's {"ok": true}
+        # answer is printed as-is, so the key never appears in CLI output.
+        method, path, payload = (
+            "POST",
+            "/api/providers/key",
+            {"provider": args.provider, "key": args.key},
+        )
+    elif args.command == "clear-key":
+        method, path, payload = (
+            "POST",
+            "/api/providers/clear-key",
+            {"provider": args.provider},
+        )
     elif args.command == "regenerate":
         method, path, payload = "POST", "/api/regenerate", {"coin": args.coin}
     elif args.command == "config":

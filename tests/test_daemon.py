@@ -78,8 +78,9 @@ class Client:
     def get(self, path: str) -> Response:
         return self._send(urllib.request.Request(self.base + path, method="GET"))
 
-    def post(self, path: str, **kwargs) -> Response:
-        payload = kwargs.get("json")
+    def post(self, path: str, payload=None, **kwargs) -> Response:
+        if payload is None:
+            payload = kwargs.get("json")
         body = json.dumps(payload).encode("utf-8") if payload is not None else b""
         request = urllib.request.Request(
             self.base + path,
@@ -121,6 +122,44 @@ def data_dir(tmp_path):
     path = tmp_path / "data"
     path.mkdir()
     return path
+
+
+@pytest.fixture()
+def client_addr(addr):
+    """Alias for ``addr`` for tests that only need the ``host:port``."""
+    return addr
+
+
+_STARTED_SERVERS: list = []
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_started_servers():
+    """Tear down servers created via ``start_server`` after each test."""
+    yield
+    while _STARTED_SERVERS:
+        instance = _STARTED_SERVERS.pop()
+        instance.stop_event.set()
+        instance.shutdown()
+        instance.server_close()
+
+
+def start_server(tmp_path):
+    """Build a port-0 daemon under ``tmp_path`` and return a ``Client``.
+
+    The keys file path is not passed explicitly: the autouse
+    ``xdg_isolation`` fixture points ``XDG_DATA_HOME`` at ``tmp_path``, so
+    ``engine.keys`` resolves the keys file inside the same isolation —
+    that is the keys-path override mechanism for these tests.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(exist_ok=True)
+    config = load_config(tmp_path / "no-such-config.json")
+    instance = daemon.build_server(config, data_dir, port=0)
+    thread = threading.Thread(target=instance.serve_forever, daemon=True)
+    thread.start()
+    _STARTED_SERVERS.append(instance)
+    return Client(f"http://127.0.0.1:{instance.server_address[1]}")
 
 
 @pytest.fixture()
@@ -586,3 +625,55 @@ def test_playbookd_serves_seeded_api_on_ephemeral_port(BIN, tmp_path):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+
+
+# --- daemon: provider keys (Task 5) ------------------------------------------
+
+
+def test_set_key_then_providers_shows_mask_only(tmp_path):
+    client = start_server(tmp_path)
+    assert client.post(
+        "/api/providers/key", {"provider": "openrouter", "key": "sk-secret-1234"}
+    ).status == 200
+    rows = client.get("/api/providers").json()
+    row = next(r for r in rows if r["id"] == "openrouter")
+    assert row["key_set"] is True and row["key_hint"] == "sk-…1234"
+    assert "sk-secret-1234" not in json.dumps(rows)
+    assert "sk-secret-1234" not in json.dumps(client.get("/api/status").json())
+    assert "sk-secret-1234" not in json.dumps(client.get("/api/config").json())
+
+
+def test_clear_key(tmp_path):
+    client = start_server(tmp_path)
+    client.post(
+        "/api/providers/key", {"provider": "openrouter", "key": "sk-secret-1234"}
+    )
+    assert client.post(
+        "/api/providers/clear-key", {"provider": "openrouter"}
+    ).status == 200
+    assert (
+        next(r for r in client.get("/api/providers").json() if r["id"] == "openrouter")[
+            "key_set"
+        ]
+        is False
+    )
+
+
+def test_set_key_rejects_unknown_provider(tmp_path):
+    client = start_server(tmp_path)
+    r = client.post("/api/providers/key", {"provider": "nope", "key": "x"})
+    assert r.status == 400
+
+
+def test_cli_key_commands(client_addr, tmp_path, BIN):
+    out = subprocess.check_output(
+        [str(BIN / "playbook"), "set-key", "openrouter", "sk-1234", "-addr", client_addr],
+        text=True,
+    )
+    assert json.loads(out)["ok"] is True
+    rows = json.loads(
+        subprocess.check_output(
+            [str(BIN / "playbook"), "providers", "-addr", client_addr], text=True
+        )
+    )
+    assert any(r["id"] == "openrouter" for r in rows)
