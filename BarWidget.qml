@@ -4,7 +4,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// The glance: this coin's live price and the current bias, read from the
+// The glance: live prices and biases for every configured coin, read from the
 // daemon on a timer. Clicking opens the app as its own window.
 BarWidget {
   id: root
@@ -27,15 +27,25 @@ BarWidget {
                                         .replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helperPath: pluginDir + "/bin/playbook"
 
-  // The last read of `playbook latest`. Null until the daemon has answered
-  // once; {"available": false} when the store is empty.
-  property var snap: null
+  // Configured coins and the newest report for each, keyed by coin string.
+  // Null/unparseable replies are ignored so a transient daemon failure never
+  // replaces a good snapshot with a stale or invented number.
+  property var coins: []
+  property var snaps: ({})
+  property var latestQueue: []
+  property string pendingCoin: ""
 
-  readonly property var report: snap && snap.available === true ? snap.report : null
+  readonly property string primaryCoin: coins.length > 0 ? String(coins[0]) : ""
+
+  function reportFor(coin) {
+    var snap = snaps[coin]
+    return snap && snap.available === true ? snap.report : null
+  }
 
   // The price this report speaks about: the first live quote, falling back
   // to the indicator payload of the freshest timeframe when quotes failed.
-  readonly property real price: {
+  function priceFor(coin) {
+    var report = reportFor(coin)
     if (!report) return NaN
     var sources = report.snapshot && report.snapshot.sources
     if (Array.isArray(sources)) {
@@ -56,7 +66,8 @@ BarWidget {
 
   // The bias, from the daily trend first and the faster timeframes behind
   // it. bullish = LONG (accent), bearish = SHORT (urgent), flat = neutral.
-  readonly property string bias: {
+  function biasFor(coin) {
+    var report = reportFor(coin)
     if (!report) return ""
     var ind = report.indicators || {}
     var order = ["1D", "4h", "15m"]
@@ -69,17 +80,10 @@ BarWidget {
     }
     return ""
   }
-  readonly property string biasLabel:
-    bias === "bullish" ? "LONG" : bias === "bearish" ? "SHORT" : bias === "flat" ? "FLAT" : ""
-  readonly property color biasColor:
-    bias === "bullish" ? accent : bias === "bearish" ? urgent : foreground
 
-  // What the bar shows. A dash until the daemon answers, so a fresh install
-  // shows a placeholder rather than a stale or invented number.
-  readonly property string figure: {
-    if (!isFinite(price)) return "—"
-    var s = formatPrice(price)
-    return biasLabel === "" ? s : s + " · " + biasLabel
+  function biasColorFor(coin) {
+    var b = biasFor(coin)
+    return b === "bullish" ? accent : b === "bearish" ? urgent : foreground
   }
 
   function formatPrice(p) {
@@ -90,6 +94,45 @@ BarWidget {
     return parts.join(".")
   }
 
+  // "BTC/USDT" -> "BTC"; the base symbol is what a glance needs.
+  function symbolFor(coin) {
+    var parts = String(coin || "").split("/")
+    return parts.length > 0 ? parts[0] : ""
+  }
+
+  function figureFor(coin) {
+    var sym = symbolFor(coin)
+    var prefix = sym !== "" ? sym + " " : ""
+    var p = priceFor(coin)
+    if (!isFinite(p)) return prefix + "—"
+    var s = formatPrice(p)
+    var b = biasFor(coin)
+    var label = b === "bullish" ? "LONG" : b === "bearish" ? "SHORT" : b === "flat" ? "FLAT" : ""
+    return prefix + (label === "" ? s : s + " · " + label)
+  }
+
+  // Marquee geometry. The strip holds one copy per coin followed by the same
+  // copy again, so scrolling exactly one copy width loops without a seam.
+  readonly property real viewportWidth: Style.space(240)
+  readonly property real figureWidth: Style.space(120)
+  readonly property real figureSpacing: Style.space(12)
+  readonly property real pxPerSec: 30
+  readonly property real copyWidth: coins.length * (figureWidth + figureSpacing)
+  property real offset: 0
+
+  onCopyWidthChanged: root.offset = root.offset % (root.copyWidth > 0 ? root.copyWidth : 1)
+
+  readonly property string tooltipText: {
+    if (!root.built) return "CRYPTO PLAYBOOK: not installed yet, open to set up"
+    if (!root.running) return "CRYPTO PLAYBOOK: daemon not running"
+    if (root.coins.length === 0) return "CRYPTO PLAYBOOK: no coins configured"
+    var snapsRef = root.snaps
+    var parts = []
+    for (var i = 0; i < root.coins.length; i++)
+      parts.push(root.coins[i] + " " + root.figureFor(root.coins[i]))
+    return "CRYPTO PLAYBOOK: " + parts.join("   |   ")
+  }
+
   implicitWidth: row.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -98,9 +141,18 @@ BarWidget {
       bar.shell.toggle("windong.cryptoplaybook", "{}")
   }
 
+  function pumpQueue() {
+    if (!root.running || coinsProc.running || latestProc.running) return
+    if (root.latestQueue.length === 0) return
+    var coin = root.latestQueue.shift()
+    root.pendingCoin = coin
+    latestProc.command = [root.helperPath, "latest", coin, "-addr", root.addr]
+    latestProc.running = true
+  }
+
   function refresh() {
-    if (!root.running || fetchProc.running) return
-    fetchProc.running = true
+    if (!root.running || coinsProc.running || latestProc.running) return
+    coinsProc.running = true
   }
 
   onRunningChanged: if (running) Qt.callLater(root.refresh)
@@ -120,17 +172,31 @@ BarWidget {
     "XDG_DATA_HOME": Quickshell.env("XDG_DATA_HOME") || ""
   })
 
+  // The configured coin list. Re-read on every refresh so Settings changes
+  // are picked up without restarting the shell.
   Process {
-    id: fetchProc
-    command: [root.helperPath, "latest", "-addr", root.addr]
+    id: coinsProc
+    command: [root.helperPath, "coins", "-addr", root.addr]
     clearEnvironment: true
     environment: root.childEnv
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         var raw = String(text || "").trim()
-        if (raw === "") return
-        try { root.snap = JSON.parse(raw) } catch (e) { root.snap = null }
+        if (raw !== "") {
+          try {
+            var parsed = JSON.parse(raw)
+            if (Array.isArray(parsed)) {
+              var list = []
+              for (var i = 0; i < parsed.length; i++) {
+                if (typeof parsed[i] === "string" && parsed[i] !== "") list.push(parsed[i])
+              }
+              root.coins = list
+            }
+          } catch (e) { /* keep the previous list */ }
+        }
+        root.latestQueue = root.coins.slice()
+        root.pumpQueue()
       }
     }
   }
@@ -139,9 +205,54 @@ BarWidget {
   Timer {
     interval: 15000
     repeat: false
-    running: fetchProc.running
-    onTriggered: if (fetchProc.running) fetchProc.running = false
+    running: coinsProc.running
+    onTriggered: {
+      if (coinsProc.running) coinsProc.running = false
+      root.latestQueue = root.coins.slice()
+      root.pumpQueue()
+    }
   }
+
+  Process {
+    id: latestProc
+    command: []
+    clearEnvironment: true
+    environment: root.childEnv
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var coin = root.pendingCoin
+        root.pendingCoin = ""
+        var raw = String(text || "").trim()
+        if (coin !== "") {
+          var copy = Object.assign({}, root.snaps)
+          if (raw !== "") {
+            try {
+              var parsed = JSON.parse(raw)
+              if (parsed && typeof parsed === "object") copy[coin] = parsed
+              else delete copy[coin]
+            } catch (e) { delete copy[coin] }
+          } else {
+            delete copy[coin]
+          }
+          root.snaps = copy
+        }
+        root.pumpQueue()
+      }
+    }
+  }
+
+  Timer {
+    interval: 15000
+    repeat: false
+    running: latestProc.running
+    onTriggered: {
+      if (latestProc.running) latestProc.running = false
+      root.pendingCoin = ""
+      root.pumpQueue()
+    }
+  }
+
 
   Row {
     id: row
@@ -155,28 +266,70 @@ BarWidget {
       // built still has something to click: the app is where the build is.
       text: "\uf201"
       labelVisible: false
-      tooltipText: !root.built ? "CRYPTO PLAYBOOK: not installed yet, open to set up"
-                 : !root.running ? "CRYPTO PLAYBOOK: daemon not running"
-                 : root.report && root.figure !== "—" && root.report.coin
-                   ? "CRYPTO PLAYBOOK: " + root.report.coin + " " + root.figure
-                     + (root.report.generated_at ? " since " + root.report.generated_at : "")
-                   : "CRYPTO PLAYBOOK: no report yet"
+      tooltipText: root.tooltipText
       dimmed: !root.running
       onPressed: root.toggleApp()
     }
 
-    Text {
+    Item {
+      id: viewport
       anchors.verticalCenter: parent.verticalCenter
+      width: root.viewportWidth
+      height: button.implicitHeight
+      clip: true
       visible: root.running
-      text: root.figure
-      // Longs read as accent, shorts as urgent, everything else as plain
-      // foreground — the theme's own tokens, never a fixed hex.
-      color: root.report ? root.biasColor : root.foreground
-      font.family: bar ? bar.fontFamily : Style.font.family
-      font.pixelSize: Style.font.bodySmall
-      rightPadding: Style.space(6)
+
+      Row {
+        id: ticker
+        anchors.verticalCenter: parent.verticalCenter
+        x: -root.offset
+        spacing: root.figureSpacing
+        Repeater {
+          // The snaps read keeps figures fresh after each refresh cycle.
+          model: { var latest = root.snaps; return root.coins.length > 1 ? root.coins.concat(root.coins) : [] }
+          delegate: Item {
+            width: root.figureWidth
+            height: viewport.height
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width
+              elide: Text.ElideRight
+              text: root.figureFor(modelData)
+              // Longs read as accent, shorts as urgent, everything else as
+              // foreground — the theme's own tokens, never a fixed hex.
+              color: root.biasColorFor(modelData)
+              font.family: bar ? bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+        }
+      }
+
+      // A stepped offset keeps the wrap exact and makes hover pause simply a
+      // matter of stopping the clock — no animation restart/jump on resume.
+      Timer {
+        interval: 33
+        repeat: true
+        running: root.coins.length > 1 && root.running && !marqueeMouse.containsMouse
+        onTriggered: {
+          if (root.copyWidth > 0)
+            root.offset = (root.offset + root.pxPerSec * interval / 1000) % root.copyWidth
+        }
+      }
+
+      Text {
+        anchors.centerIn: parent
+        visible: root.coins.length < 2
+        text: root.coins.length === 1 ? root.figureFor(root.coins[0]) : "—"
+        color: root.coins.length === 1 ? root.biasColorFor(root.coins[0]) : root.foreground
+        font.family: bar ? bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.bodySmall
+      }
+
       MouseArea {
+        id: marqueeMouse
         anchors.fill: parent
+        hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: root.toggleApp()
       }

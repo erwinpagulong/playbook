@@ -29,6 +29,24 @@ omarchy-shell shell rescanPlugins          # let the shell discover the plugin
 omarchy plugin enable windong.cryptoplaybook
 ```
 
+### Bar placement
+
+When installing through Omarchy (for example `omarchy plugin add <repo-url> --enable`),
+Omarchy asks which bar section to place the widget in. The manifest's
+`barWidget.defaultSection` pre-selects `centerEnd` (beside the clock); choosing
+`center` in that prompt also lands in `centerEnd`, because `center` is the
+clock's own centered group. Available sections are `left`, `centerBegin`,
+`center`, `centerEnd`, `tray`, and `right`.
+
+If you installed with `./install.sh` (which skips Omarchy's placement prompt),
+or want to move the widget later, use:
+
+```bash
+omarchy bar move windong.cryptoplaybook --section right   # or left, centerBegin, centerEnd
+```
+
+The shell hot-reloads `shell.json`, so no restart is needed.
+
 LLM predictions need an API key for the active provider. The primary path is
 the in-app **API keys** screen: open the dashboard panel, go to *API keys*,
 paste your key for a provider (OpenAI, OpenRouter, DeepSeek, Groq, or a custom
@@ -51,6 +69,29 @@ and a stored key always wins over the environment.
 The daemon starts with the Omarchy shell's background services and seeds two sample
 reports (BTC/USDT playbook + prediction) into an empty report store, so the panel
 has content on first launch.
+
+## Dependencies and network access
+
+`install.sh` needs Python 3 and `pip`. It creates a private `.venv` inside the
+plugin directory (with real interpreter binaries, no symlinks) and installs the
+packages pinned in `requirements.txt`: `pandas`, `numpy`, `requests`, and
+`yfinance`. `pytest` is included for running the test suite and is not needed
+at runtime.
+
+The QML shell only talks to the daemon on loopback (`127.0.0.1:8099`); it never
+makes a network request itself. The daemon fetches public market data on a
+schedule or when you regenerate a report:
+
+- Candles: the public Binance REST API, with Yahoo Finance (via `yfinance`) as
+  a fallback, then a local on-disk cache.
+- Quotes: Binance, CoinGecko, and Coinbase, on a best-effort basis.
+
+No credentials are needed for market data. The only network call that can
+carry your own data is an **optional** LLM prediction request: when a provider
+key is configured, the computed indicator/level payload is sent to the selected
+OpenAI-compatible provider to write the narrative. Without a key, the daemon
+still produces deterministic playbooks and skips only that narrative. Reports,
+config, and keys stay in XDG data/config directories on your machine.
 
 ## Configure
 
