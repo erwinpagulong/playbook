@@ -1,3 +1,5 @@
+import json
+
 from engine.keys import clear_key, key_for, load_keys, mask, set_key
 
 
@@ -10,7 +12,23 @@ def test_keys_file_is_mode_600_and_round_trips(tmp_path):
 
 def test_key_hint_is_masked():
     assert mask("sk-1234567890abcdef") == "sk-…cdef"
-    assert mask("short") == "••••short"
+    assert mask("short") == "••••hort"
+    assert mask("abcd") == "••••"
+    assert mask("AIzaSyABC123") == "••••C123"
+
+
+def test_mask_never_reveals_full_key():
+    for key in ["sk-1234567890abcdef", "AIzaSyABC123", "gsk_abcdefgh", "short", "abcd"]:
+        assert key not in mask(key)
+
+
+def test_load_keys_skips_non_string_and_empty_values(tmp_path):
+    p = tmp_path / "keys.json"
+    p.write_text(
+        json.dumps({"providers": {"null_key": None, "num_key": 123, "empty_key": "", "real_key": "sk-realvalue123"}}),
+        encoding="utf-8",
+    )
+    assert load_keys(p) == {"providers": {"real_key": "sk-realvalue123"}}
 
 
 def test_clear_key_removes_only_that_provider(tmp_path):

@@ -44,7 +44,13 @@ def load_keys(path: Path | None = None) -> dict:
     providers = loaded.get("providers")
     if not isinstance(providers, dict):
         return empty
-    return {"providers": {str(k): str(v) for k, v in providers.items()}}
+    return {
+        "providers": {
+            str(k): v
+            for k, v in providers.items()
+            if isinstance(v, str) and v
+        }
+    }
 
 
 def _write_keys(data: dict, path: Path | None = None) -> None:
@@ -82,12 +88,17 @@ def clear_key(provider: str, path: Path | None = None) -> None:
 
 
 def mask(key: str) -> str:
-    """Return a non-reversible hint for ``key`` safe to display."""
-    if len(key) < 5:
-        return "••••" + key
+    """Return a non-reversible hint for ``key`` safe to display.
+
+    Never returns the full key: at most a prefix plus the last 4 chars.
+    """
     if key.startswith("sk-"):
-        return "sk-…" + key[-4:]
-    return "••••" + key
+        prefix = "sk-…"
+    else:
+        prefix = "••••"
+    if len(key) >= 5:
+        return prefix + key[-4:]
+    return prefix
 
 
 def key_for(provider: str, config: dict, path: Path | None = None) -> str:
