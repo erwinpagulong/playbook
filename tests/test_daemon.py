@@ -48,7 +48,7 @@ root=$(dirname -- "$(dirname -- "$self")")
 export PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}"
 py="$root/.venv/bin/python"
 [ -x "$py" ] || py=python3
-exec "$py" -m engine.__MODULE__ "$@"
+exec "$py" -B -m engine.__MODULE__ "$@"
 """
 
 

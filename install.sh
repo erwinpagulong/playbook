@@ -54,6 +54,8 @@ mkdir -p "$PLUGIN_DIR/bin"
 
 # Generate the wrappers. The text matches the contract asserted in
 # tests/test_daemon.py (WRAPPER_SCRIPT) — keep them byte-identical.
+# Python runs with -B so it never writes __pycache__ into the plugin folder;
+# the shell watches that folder and reloads the plugin on every file change.
 write_wrapper() {
     local module="$1" target="$2"
     cat > "$target" <<EOF
@@ -67,7 +69,7 @@ root=\$(dirname -- "\$(dirname -- "\$self")")
 export PYTHONPATH="\$root\${PYTHONPATH:+:\$PYTHONPATH}"
 py="\$root/.venv/bin/python"
 [ -x "\$py" ] || py=python3
-exec "\$py" -m engine.${module} "\$@"
+exec "\$py" -B -m engine.${module} "\$@"
 EOF
     chmod 755 "$target"
 }

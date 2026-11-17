@@ -503,11 +503,17 @@ Item {
         spacing: 0
 
         // ---- nav rail
-        Sidebar {
+        // Loaded by file URL, like the section views: the shell instantiates
+        // App.qml as a plugin entry point where local type names from a
+        // directory import are not resolved.
+        Loader {
           Layout.fillHeight: true
           Layout.preferredWidth: Style.space(220)
-          app: root
-          manifest: root.manifest
+          source: "components/Sidebar.qml"
+          onLoaded: {
+            item.app = root
+            item.manifest = root.manifest
+          }
         }
 
         // ---- content

@@ -92,6 +92,12 @@ def test_query_watchdog_clears_callback_and_pumps_queue():
     assert "pumpQueries" in block
 
 
+def test_app_qml_loads_sidebar_by_file_url():
+    text = (ROOT / "App.qml").read_text()
+    assert 'source: "components/Sidebar.qml"' in text
+    assert "Sidebar {" not in text
+
+
 def test_data_privacy_key_wording_is_accurate():
     text = (ROOT / "views" / "DataPrivacy.qml").read_text()
     # The key IS transmitted in the Authorization header; what is true is that
