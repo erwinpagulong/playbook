@@ -49,9 +49,9 @@ idempotent, so it is safe to re-run after updates.
 
 When installing through Omarchy (for example `omarchy plugin add <repo-url> --enable`),
 Omarchy asks which bar section to place the widget in. The manifest's
-`barWidget.defaultSection` pre-selects `centerEnd` (beside the clock); choosing
-`center` in that prompt also lands in `centerEnd`, because `center` is the
-clock's own centered group. Available sections are `left`, `centerBegin`,
+`barWidget.defaultSection` pre-selects `center`; Omarchy maps that to
+`centerEnd` (beside the clock), because `center` itself is the clock's own
+centered group. Available sections are `left`, `centerBegin`,
 `center`, `centerEnd`, `tray`, and `right`.
 
 If you installed with `./install.sh` (which skips Omarchy's placement prompt),
