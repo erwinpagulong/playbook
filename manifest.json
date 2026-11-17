@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "windong.cryptoplaybook",
   "name": "Crypto Playbook",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "windong",
   "description": "Local crypto playbooks and LLM-grounded predictions, generated on your machine and shown in the Omarchy bar",
   "kinds": [

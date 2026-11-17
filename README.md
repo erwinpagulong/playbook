@@ -70,6 +70,29 @@ The daemon starts with the Omarchy shell's background services and seeds two sam
 reports (BTC/USDT playbook + prediction) into an empty report store, so the panel
 has content on first launch.
 
+## Dependencies and network access
+
+`install.sh` needs Python 3 and `pip`. It creates a private `.venv` inside the
+plugin directory (with real interpreter binaries, no symlinks) and installs the
+packages pinned in `requirements.txt`: `pandas`, `numpy`, `requests`, and
+`yfinance`. `pytest` is included for running the test suite and is not needed
+at runtime.
+
+The QML shell only talks to the daemon on loopback (`127.0.0.1:8099`); it never
+makes a network request itself. The daemon fetches public market data on a
+schedule or when you regenerate a report:
+
+- Candles: the public Binance REST API, with Yahoo Finance (via `yfinance`) as
+  a fallback, then a local on-disk cache.
+- Quotes: Binance, CoinGecko, and Coinbase, on a best-effort basis.
+
+No credentials are needed for market data. The only network call that can
+carry your own data is an **optional** LLM prediction request: when a provider
+key is configured, the computed indicator/level payload is sent to the selected
+OpenAI-compatible provider to write the narrative. Without a key, the daemon
+still produces deterministic playbooks and skips only that narrative. Reports,
+config, and keys stay in XDG data/config directories on your machine.
+
 ## Configure
 
 Configuration lives at `$XDG_CONFIG_HOME/crypto-playbook/config.json` (default
