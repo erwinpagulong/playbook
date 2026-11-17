@@ -1,7 +1,7 @@
 import json
 
 from engine.config import load_config, validate_config
-from engine.keys import set_key
+from engine.keys import mask, set_key
 from engine.providers import (
     PRESETS,
     is_valid_provider,
@@ -48,6 +48,15 @@ def test_is_valid_provider():
     assert not is_valid_provider("")
 
 
+KEY_ENVS = (
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GROQ_API_KEY",
+    "CUSTOM_API_KEY",
+)
+
+
 def test_provider_llm_config_returns_fresh_dict_and_overlays():
     cfg = load_config(None)
     cfg["llm"]["provider"] = "openai"
@@ -57,11 +66,16 @@ def test_provider_llm_config_returns_fresh_dict_and_overlays():
     second = provider_llm_config("groq", cfg)
     assert first == second and first is not second
     assert first["base_url"] == PRESETS["groq"]["base_url"]
-    assert first["api_key_env"] == "MY_KEY_ENV"
+    # A non-active provider keeps its own preset env var; the global override
+    # applies only to the active provider.
+    assert first["api_key_env"] == PRESETS["groq"]["api_key_env"]
+    assert provider_llm_config("openai", cfg)["api_key_env"] == "MY_KEY_ENV"
     assert first["timeout_s"] == 12
 
 
-def test_provider_list_rows_cover_all_presets_without_keys(tmp_path):
+def test_provider_list_rows_cover_all_presets_without_keys(tmp_path, monkeypatch):
+    for name in KEY_ENVS:
+        monkeypatch.delenv(name, raising=False)
     p = tmp_path / "keys.json"
     cfg = load_config(None)
     rows = provider_list(cfg, p)
@@ -74,3 +88,18 @@ def test_provider_list_rows_cover_all_presets_without_keys(tmp_path):
         assert row["key_set"] is False
         assert row["key_hint"] == ""
     assert next(r for r in rows if r["id"] == "openai")["active"] is True
+
+
+def test_only_legacy_global_env_marks_active_provider_keyed(tmp_path, monkeypatch):
+    """A single global key (OPENAI_API_KEY) must not key other presets."""
+    for name in KEY_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-global-only")
+    p = tmp_path / "keys.json"  # deliberately absent
+    rows = {r["id"]: r for r in provider_list(load_config(None), p)}
+    keyed = {pid for pid, row in rows.items() if row["key_set"]}
+    assert keyed == {"openai"}
+    assert rows["openai"]["key_hint"] == mask("sk-global-only")
+    for pid in ("openrouter", "deepseek", "groq", "custom"):
+        assert rows[pid]["key_set"] is False
+        assert rows[pid]["key_hint"] == ""

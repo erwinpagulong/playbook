@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from engine.keys import key_for, mask
+from engine.keys import mask, resolved_key
 
 #: Public OpenAI-compatible provider presets.
 PRESETS: dict[str, dict] = {
@@ -60,11 +60,13 @@ def is_valid_provider(provider: str | None) -> bool:
 def provider_llm_config(provider: str, config: dict) -> dict:
     """Return the effective LLM config for ``provider``.
 
-    Starts from the preset and always overlays ``api_key_env`` and
-    ``timeout_s`` from ``config["llm"]``. ``base_url`` and ``model`` are
-    overlaid from the config only when ``provider`` is the active provider
-    (``config["llm"]["provider"]``), so selecting a different provider uses
-    that preset's endpoint/model while user edits to the active one are
+    Starts from the preset. ``api_key_env`` is overlaid from the config only
+    for the active provider (``config["llm"]["provider"]``); any other
+    provider keeps its preset's own env var so the global legacy variable
+    cannot stand in for a different provider's key. ``timeout_s`` is always
+    overlaid from the config. ``base_url`` and ``model`` are overlaid from
+    the config only for the active provider, so selecting a different one
+    uses that preset's endpoint/model while user edits to the active one are
     honored. Returns a fresh dict.
     """
     if not is_valid_provider(provider):
@@ -72,13 +74,13 @@ def provider_llm_config(provider: str, config: dict) -> dict:
     llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
     merged = dict(PRESETS[provider])
     merged["provider"] = provider
-    merged["api_key_env"] = llm.get("api_key_env", merged["api_key_env"])
-    merged["timeout_s"] = llm.get("timeout_s", 60)
     if provider == llm.get("provider"):
+        merged["api_key_env"] = llm.get("api_key_env", merged["api_key_env"])
         if "base_url" in llm:
             merged["base_url"] = llm["base_url"]
         if "model" in llm:
             merged["model"] = llm["model"]
+    merged["timeout_s"] = llm.get("timeout_s", 60)
     return merged
 
 
@@ -86,7 +88,9 @@ def provider_list(config: dict, keys_path: Path | None = None) -> list[dict]:
     """Return one row per preset describing selection and key state.
 
     Rows carry ``id``, ``name``, ``base_url``, ``model``, ``active``,
-    ``fallback``, ``key_set`` and ``key_hint``. Key material never appears —
+    ``fallback``, ``key_set`` and ``key_hint``. Key state comes from that
+    provider's stored key or its own env var — the global legacy variable
+    never marks an unrelated provider as keyed. Key material never appears —
     only a boolean and the masked hint from ``engine.keys.mask``.
     """
     llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
@@ -95,7 +99,7 @@ def provider_list(config: dict, keys_path: Path | None = None) -> list[dict]:
     rows: list[dict] = []
     for pid, preset in PRESETS.items():
         effective = provider_llm_config(pid, config)
-        key = key_for(pid, config, keys_path)
+        key = resolved_key(pid, config, effective, keys_path)
         rows.append(
             {
                 "id": pid,

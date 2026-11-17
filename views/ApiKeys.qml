@@ -141,7 +141,7 @@ Item {
 
       Note {
         width: parent.width
-        text: "Keys are stored in a private file the daemon reads at startup — never in the config, the reports, or this window. Only a masked hint is shown; the full key is never returned by any command. OPENAI_API_KEY-style environment variables still work as a fallback when no key is stored here."
+        text: "Keys are stored in a private file the daemon reads at generation time — never in the config, the reports, or this window. Only a masked hint is shown; the full key is never returned by any command. OPENAI_API_KEY-style environment variables still work as a fallback when no key is stored here."
       }
 
       TitledCard {

@@ -216,7 +216,7 @@ Item {
             width: parent.width
             title: "API KEYS"
             Body { text: "Provider keys are managed on the API keys screen." }
-            Note { width: parent.width; text: "Keys are stored in a private file the daemon reads at startup — never in the config, the reports, or this window. Only a masked hint is shown; pick the active and fallback provider on the Model screen." }
+            Note { width: parent.width; text: "Keys are stored in a private file the daemon reads at generation time — never in the config, the reports, or this window. Only a masked hint is shown; pick the active and fallback provider on the Model screen." }
             Apply { text: "Open API keys"; onClicked: if (app) app.setView("apikeys") }
           }
 

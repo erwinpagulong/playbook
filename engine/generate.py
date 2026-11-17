@@ -43,7 +43,7 @@ from engine.indicators import analyze_timeframe
 from engine.llm import LLMProviderError, LLMUnavailable, is_provider_failure
 from engine.levels import build_levels
 from engine.providers import provider_llm_config
-from engine.keys import key_for
+from engine.keys import resolved_key
 from engine.report import new_report, render_markdown, save_report
 
 log = logging.getLogger(__name__)
@@ -116,8 +116,9 @@ def _predict(
 
     Uses the active provider (``config["llm"]["provider"]``): its preset
     endpoint/model (config ``base_url``/``model`` overrides for the active
-    provider are honored), with a key resolved from the keys file or the env
-    var. On a fallback-applicable provider failure (see
+    provider are honored), with a key resolved by ``engine.keys.resolved_key``:
+    stored key → effective env var → global legacy env var. On a
+    fallback-applicable provider failure (see
     ``_fallback_eligible``) with a different ``config["llm"]["fallback_provider"]``
     configured, the fallback provider is tried exactly once.
 
@@ -157,7 +158,7 @@ def _predict(
             "fallback_used": is_fallback,
         }
         last_meta = meta
-        key = key_for(str(pid), config, keys_path)
+        key = resolved_key(str(pid), config, cfg, keys_path)
         try:
             reply = llm.call_llm(cfg, prompt, api_key=key)
         except LLMProviderError as exc:

@@ -165,6 +165,38 @@ def test_quota_failure_uses_fallback(monkeypatch, tmp_path):
     assert result["report"]["prediction"]["provider"] == "deepseek"
 
 
+def test_deepseek_call_uses_own_env_var_not_global(monkeypatch, tmp_path):
+    """DeepSeek (a non-active fallback) uses DEEPSEEK_API_KEY, not the global.
+
+    No stored key exists and the global legacy variable holds a different
+    value; the preset's own variable must win for the call.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    for name in (
+        "OPENAI_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY", "CUSTOM_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-call")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-global-wrong")
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
+    seen_keys = []
+
+    def fake_call(cfg, prompt, api_key=None):
+        seen_keys.append(api_key)
+        if len(seen_keys) == 1:
+            raise llm.LLMProviderError("429", status=429, marker="insufficient_quota")
+        return valid_prediction()
+
+    monkeypatch.setattr(llm, "call_llm", fake_call)
+    cfg = load_config(None)
+    cfg["llm"]["fallback_provider"] = "deepseek"
+    result = generate_report("BTC/USDT", cfg, tmp_path)
+    assert result["report"]["prediction"]["fallback_used"] is True
+    assert result["report"]["prediction"]["provider"] == "deepseek"
+    assert seen_keys == ["sk-global-wrong", "sk-deepseek-call"]
+
+
 def test_invalid_output_does_not_fall_back(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)

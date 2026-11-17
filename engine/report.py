@@ -203,6 +203,18 @@ def _levels_section(levels: dict) -> str:
 
 def _prediction_section(prediction: dict) -> str:
     data = prediction if isinstance(prediction, dict) else {}
+    # Surface which provider actually answered (and whether it was the
+    # fallback) when the generation path recorded that metadata.
+    answered = ""
+    provider = str(data.get("provider") or "").strip()
+    if provider:
+        model = str(data.get("model") or "").strip()
+        label = f"Answered by {provider}"
+        if model:
+            label += f" / {model}"
+        if data.get("fallback_used"):
+            label += " (fallback)"
+        answered = label + "\n\n"
     if not data.get("available"):
         message = (
             "Prediction: **not available** — no scenario model ran for this "
@@ -211,10 +223,10 @@ def _prediction_section(prediction: dict) -> str:
         reason = str(data.get("reason") or "").strip()
         if reason:
             message += f" Reason: {reason}"
-        return message
+        return answered + message
     scenarios = data.get("scenarios") or []
     if not scenarios:
-        return "Prediction: available, but no scenarios were recorded."
+        return answered + "Prediction: available, but no scenarios were recorded."
     headers: list[str] = []
     for scenario in scenarios:
         if isinstance(scenario, dict):
@@ -226,7 +238,7 @@ def _prediction_section(prediction: dict) -> str:
         for scenario in scenarios
         if isinstance(scenario, dict)
     ]
-    return _table(headers or ["scenario"], rows)
+    return answered + _table(headers or ["scenario"], rows)
 
 
 def _risk_section(risk_rules: object) -> str:

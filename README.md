@@ -40,7 +40,7 @@ tried when the active provider fails.
 
 The environment variable named by `llm.api_key_env` (`OPENAI_API_KEY` by
 default) still works as a **legacy fallback**: if no key is stored in
-`keys.json` for a provider, the daemon reads that variable at startup. Because
+`keys.json` for a provider, the daemon reads that variable at generation time. Because
 the daemon is launched by Quickshell, such a variable must live in **Quickshell's
 own launch environment**: export it in the shell session that starts
 Omarchy/Quickshell (for example from your login shell profile) *before*

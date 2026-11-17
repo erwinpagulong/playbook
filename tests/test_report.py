@@ -128,6 +128,36 @@ def test_render_markdown_returns_source_markdown_verbatim():
     assert render_markdown(r) == "# Custom\n\ntext with **markdown**\n"
 
 
+def test_markdown_prediction_surfaces_answering_provider():
+    r = new_report("BTC/USDT", {}, {}, {})
+    r["prediction"] = {
+        "available": True,
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "fallback_used": True,
+        "scenarios": [{"name": "up", "probability": 100}],
+    }
+    md = render_markdown(r)
+    assert "Answered by deepseek / deepseek-chat (fallback)" in md
+
+    r["prediction"] = {
+        "available": False,
+        "reason": "prediction unavailable",
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "fallback_used": False,
+    }
+    md = render_markdown(r)
+    assert "Answered by openai / gpt-4o-mini" in md
+    assert "(fallback)" not in md
+
+
+def test_markdown_prediction_has_no_answered_line_without_provider():
+    r = new_report("BTC/USDT", {}, {}, {})
+    r["prediction"] = {"available": True, "model": "gpt-4o-mini"}
+    assert "Answered by" not in render_markdown(r)
+
+
 def test_markdown_prediction_reason_is_emitted_when_unavailable():
     r = new_report("BTC/USDT", {}, {}, {})
     r["prediction"] = {
