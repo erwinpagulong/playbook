@@ -116,6 +116,33 @@ def test_invalid_llm_output_still_saves_report(monkeypatch, tmp_path):
     assert list_reports(tmp_path)[0]["id"] == result["report"]["id"]
 
 
+def test_validation_failure_gets_one_corrective_retry(monkeypatch, tmp_path):
+    """One malformed reply (ungrounded narrative price) is retried once with
+    a corrective instruction, and the valid retry lands as the prediction."""
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
+    prompts = []
+
+    def fake_call(cfg, prompt, api_key=None):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            bad = valid_prediction()
+            bad["bottom_line"] = (
+                "Price could reach 71234 before the weekend — educational only."
+            )
+            return bad
+        return valid_prediction()
+
+    monkeypatch.setattr(llm, "call_llm", fake_call)
+    result = generate_report("BTC/USDT", load_config(None), tmp_path)
+    assert len(prompts) == 2
+    assert result["report"]["prediction"]["available"] is True
+    # the retry reuses the original prompt plus a key-free correction that
+    # names the rejected token and the grounding rule
+    assert prompts[1].startswith(prompts[0])
+    assert "71234" in prompts[1]
+    assert "ALLOWED_PRICE_LEVELS" in prompts[1]
+
+
 # --- brief: fetch failure falls back to cache -------------------------------
 
 def test_fetch_failure_uses_cache(monkeypatch, tmp_path):
@@ -202,13 +229,21 @@ def test_invalid_output_does_not_fall_back(monkeypatch, tmp_path):
     monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
     calls = []
     def fake_call(cfg, prompt, api_key=None):
-        calls.append(1)
+        calls.append(cfg["base_url"])
         return {"scenarios": [{"low": 99999, "high": 99999, "probability": 100}]}
     monkeypatch.setattr(llm, "call_llm", fake_call)
-    cfg = load_config(None); cfg["llm"]["fallback_provider"] = "deepseek"
+    cfg = load_config(None)
+    cfg["llm"]["provider"] = "openai"
+    cfg["llm"]["base_url"] = providers.PRESETS["openai"]["base_url"]
+    cfg["llm"]["model"] = providers.PRESETS["openai"]["model"]
+    cfg["llm"]["fallback_provider"] = "deepseek"
     result = generate_report("BTC/USDT", cfg, tmp_path)
-    assert len(calls) == 1
+    # the one corrective retry reuses the SAME provider — never the fallback
+    assert len(calls) == 2
+    assert all(url == providers.PRESETS["openai"]["base_url"] for url in calls)
     assert result["report"]["prediction"]["available"] is False
+    assert result["report"]["prediction"]["provider"] == "openai"
+    assert result["report"]["prediction"]["fallback_used"] is False
 
 
 def test_active_provider_selects_endpoint(monkeypatch, tmp_path):

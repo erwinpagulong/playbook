@@ -9,6 +9,23 @@ def test_dashboard_renders_core_cards():
         assert label in text
 
 
+def test_indicator_bb_width_subtracts_row_gaps_in_header_and_delegate():
+    """The BB column shares a 7-column Row with 6 gaps of Style.space(8).
+
+    Both the header and the delegate must subtract those 6 gaps, or the BB
+    column eats the ATR column's space and ATR is clipped off the card.
+    """
+    text = (ROOT / "views/Dashboard.qml").read_text()
+    bb_widths = [
+        line
+        for line in text.splitlines()
+        if "indicatorCard.width - indicatorCard.pad * 2 - Style.space(40 + 80 + 56 + 72 + 90 + 64)" in line
+    ]
+    assert len(bb_widths) == 2, "expected BB width in both header and delegate"
+    for line in bb_widths:
+        assert "Style.space(8) * 6" in line, f"BB width misses the 6 row gaps: {line}"
+
+
 def test_api_keys_view_uses_key_commands():
     text = (ROOT / "views/ApiKeys.qml").read_text()
     assert 'set-key' in text and 'clear-key' in text and 'key_hint' in text

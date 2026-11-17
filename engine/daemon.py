@@ -20,8 +20,8 @@ small JSON API that the QML panel consumes through `engine.cli`:
     POST /api/regenerate      {"coin": ...} -> background run, {"started": true}
 
 `main()` seeds sample reports into an empty store, loads the config,
-kicks off one generation per configured coin when the configured LLM key
-env var holds a value, starts the interval scheduler (every
+kicks off one generation per configured coin when the active provider has
+an effective key (stored or env), starts the interval scheduler (every
 ``interval_minutes``, default 60), and serves until interrupted. All
 binds are loopback-only and every request is answered with JSON —
 handlers catch their own errors instead of dropping the connection.
@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import shutil
 import threading
 from http import HTTPStatus
@@ -48,8 +47,8 @@ from engine.config import (
     save_config,
     validate_config,
 )
-from engine.keys import clear_key, set_key
-from engine.providers import is_valid_provider, provider_list
+from engine.keys import clear_key, resolved_key, set_key
+from engine.providers import is_valid_provider, provider_list, provider_llm_config
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +89,23 @@ def _first(query: dict, key: str) -> str | None:
     """First value of ``key`` in a parsed query string, or None."""
     values = query.get(key)
     return values[0] if values else None
+
+
+def _active_key_present(config: dict) -> bool:
+    """Whether the active provider has an effective key (stored or env).
+
+    Uses the same resolution as generation and ``/api/providers`` — a stored
+    key for the active provider, its effective env var, or the legacy global
+    variable — so the status banner and the startup-generation gate agree
+    with what generation can actually use. Returns a boolean only; the key
+    value is never read into state, logs or responses here.
+    """
+    llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
+    active = llm.get("provider")
+    if not is_valid_provider(active):
+        return False
+    effective = provider_llm_config(str(active), config)
+    return bool(resolved_key(str(active), config, effective))
 
 
 # --------------------------------------------------------------------------
@@ -184,17 +200,14 @@ def start_scheduler(
     """Start the scheduler, plus one immediate run when an LLM key is set.
 
     Returns ``(startup_thread | None, scheduler_thread)``. The startup
-    thread regenerates every configured coin exactly once when the config's
-    ``llm.api_key_env`` names an environment variable that holds a value
-    (the key's *value* is never read into logs or state). The scheduler
-    thread waits a full interval before its first tick, so startup runs
-    are never duplicated.
+    thread regenerates every configured coin exactly once when the active
+    provider has an effective key (stored, env or legacy — see
+    ``_active_key_present``); the key's *value* is never read into logs or
+    state. The scheduler thread waits a full interval before its first tick,
+    so startup runs are never duplicated.
     """
-    llm_config = server.config.get("llm")
-    llm_config = llm_config if isinstance(llm_config, dict) else {}
-    key_env = llm_config.get("api_key_env")
     startup: threading.Thread | None = None
-    if isinstance(key_env, str) and key_env and os.environ.get(key_env):
+    if _active_key_present(server.config):
         startup = threading.Thread(
             target=regenerate_all,
             args=(server,),
@@ -299,9 +312,7 @@ class PlaybookHandler(BaseHTTPRequestHandler):
             "report_count": len(report.list_reports(self.server.data_dir)),
             "generating": generating,
             "llm_key_env": key_env,
-            "llm_key_present": bool(
-                isinstance(key_env, str) and key_env and os.environ.get(key_env)
-            ),
+            "llm_key_present": _active_key_present(self.server.config),
             "provider": llm_config.get("provider"),
             "fallback_provider": llm_config.get("fallback_provider"),
             "data_dir": str(self.server.data_dir),

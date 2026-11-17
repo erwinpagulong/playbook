@@ -34,6 +34,7 @@ function never raises for expected operational failures.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from pathlib import Path
 
@@ -109,6 +110,40 @@ def _fallback_eligible(exc: LLMProviderError) -> bool:
     return exc.status in (401, 402, 403, 429) or exc.status >= 500
 
 
+#: A numeric price token cited by a validation error (e.g. "narrative price
+#: 1410.67 is not ..." or "high price 99999.0 is outside ...").
+_REJECTED_PRICE_RE = re.compile(r"price\s+(\d[\d,]*(?:\.\d+)?)\b", re.IGNORECASE)
+
+
+def _rejected_tokens(errors: list) -> list[str]:
+    """Unique numeric price tokens cited by validation errors, in order."""
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for error in errors:
+        for match in _REJECTED_PRICE_RE.finditer(str(error)):
+            token = match.group(1)
+            if token not in seen:
+                seen.add(token)
+                tokens.append(token)
+    return tokens
+
+
+def _correction_instruction(tokens: list[str]) -> str:
+    """Short, key-free instruction appended to the prompt for one retry."""
+    lines = [
+        "",
+        "CORRECTION — your previous reply was rejected by validation.",
+    ]
+    if tokens:
+        lines.append("Rejected numeric values: " + ", ".join(tokens) + ".")
+    lines.append(
+        "Every price you emit MUST be copied exactly from ALLOWED_PRICE_LEVELS; "
+        "never invent, recompute or round a price. No other numeric price-like "
+        "values may appear anywhere in the prose. Return JSON only."
+    )
+    return "\n".join(lines)
+
+
 def _predict(
     config: dict, payload: dict, keys_path: Path | None = None
 ) -> tuple[dict | None, str | None, dict | None]:
@@ -135,6 +170,7 @@ def _predict(
     provider = llm_config.get("provider")
     fallback = llm_config.get("fallback_provider")
     prompt = llm.build_prompt(payload)
+    allowed = llm.allowed_levels(payload)
 
     attempts: list[tuple[object, bool]] = [(provider, False)]
     if (
@@ -186,10 +222,33 @@ def _predict(
             return None, f"prediction unavailable: {detail}", last_meta
         if not isinstance(reply, dict):
             return None, "prediction unavailable: LLM reply was not a JSON object", last_meta
-        errors = llm.validate_prediction(reply, llm.allowed_levels(payload))
+        errors = llm.validate_prediction(reply, allowed)
         if errors:
-            joined = "; ".join(str(error) for error in errors[:3])
-            return None, f"prediction failed validation: {joined}", last_meta
+            # One corrective retry with the SAME provider/key: validation
+            # failures are model-output problems, never a reason to fall back.
+            tokens = _rejected_tokens(errors)
+            log.warning(
+                "provider %s prediction failed validation; one corrective retry "
+                "(%d rejected token(s))",
+                pid,
+                len(tokens),
+            )
+            retry_prompt = prompt + _correction_instruction(tokens)
+            try:
+                retry_reply = llm.call_llm(cfg, retry_prompt, api_key=key)
+            except (LLMProviderError, LLMUnavailable) as exc:
+                detail = str(exc).strip() or "LLM unavailable"
+                return None, f"prediction unavailable: {detail}", last_meta
+            except Exception as exc:  # noqa: BLE001 - a bad retry must not lose the report
+                detail = str(exc).strip() or exc.__class__.__name__
+                return None, f"prediction unavailable: {detail}", last_meta
+            if not isinstance(retry_reply, dict):
+                return None, "prediction unavailable: LLM reply was not a JSON object", last_meta
+            retry_errors = llm.validate_prediction(retry_reply, allowed)
+            if retry_errors:
+                joined = "; ".join(str(error) for error in retry_errors[:3])
+                return None, f"prediction failed validation: {joined}", last_meta
+            return retry_reply, None, meta
         return reply, None, meta
 
     return None, last_error or "prediction unavailable: LLM unavailable", last_meta

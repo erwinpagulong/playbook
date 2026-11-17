@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from engine import daemon, report
+from engine import daemon, keys, report
 from engine.config import config_path, load_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -252,6 +252,18 @@ def test_status_endpoint(client, data_dir):
     assert body["data_dir"] == str(data_dir)
 
 
+def test_status_reports_key_present_from_stored_key(monkeypatch, tmp_path):
+    """A stored key for the active provider counts, with no global env var."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client = start_server(tmp_path)
+    keys.set_key("openai", "dummy-stored-key")  # default path -> XDG-isolated tmp
+    body = client.get("/api/status").json()
+    assert body["llm_key_env"] == "OPENAI_API_KEY"  # legacy display unchanged
+    assert body["llm_key_present"] is True
+    # the key value is never exposed anywhere in the status payload
+    assert "dummy-stored-key" not in json.dumps(body)
+
+
 def test_coins_endpoint_returns_default_list(client):
     assert client.get("/api/coins").json() == ["BTC/USDT", "ETH/USDT"]
 
@@ -465,6 +477,26 @@ def test_scheduler_loop_ticks_on_interval_then_stops(server, monkeypatch):
 
 def test_startup_generation_runs_when_key_present(server, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "unit-test-key")
+    generated = []
+    monkeypatch.setattr(
+        daemon.generate,
+        "generate_report",
+        lambda coin, config, data_dir: (
+            generated.append(coin),
+            {"report": None, "error": None},
+        )[1],
+    )
+    startup, scheduler = daemon.start_scheduler(server)
+    assert startup is not None
+    startup.join(timeout=10)
+    assert generated == ["BTC/USDT", "ETH/USDT"]
+    assert scheduler.is_alive()
+
+
+def test_startup_generation_runs_with_stored_key(server, monkeypatch):
+    """A stored key for the active provider triggers the startup generation."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    keys.set_key("openai", "dummy-stored-key")  # default path -> XDG-isolated tmp
     generated = []
     monkeypatch.setattr(
         daemon.generate,

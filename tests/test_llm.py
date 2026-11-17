@@ -320,6 +320,38 @@ def test_validator_rejects_fabricated_prose_price():
     assert any("narrative price" in e and "71234" in e for e in errors)
 
 
+def test_validator_ignores_volume_liquidity_funding_and_market_cap_numbers():
+    """Obvious non-price numeric contexts must not be reported as prices."""
+    p = _valid_prediction_base()
+    p["per_timeframe"] = {
+        "1D": (
+            "Spot volume 1,410.67 and liquidity 2,300.50 stayed healthy; "
+            "funding 0.0123 and market cap 3,456.78 round out the picture."
+        )
+    }
+    assert validate_prediction(p, [50.0, 100.0, 200.0]) == []
+
+
+def test_excluded_token_suffix_and_price_word_guard():
+    import re
+
+    # A number with an explicit unit suffix is not a price.
+    text = "trading volume 1,410.67M today"
+    match = re.search(re.escape("1,410.67"), text)
+    assert match is not None
+    assert llm._excluded_price_token(text, match) is True
+    # The same digits in a genuine price context are still a price.
+    text = "price near 1,410.67"
+    match = re.search(re.escape("1,410.67"), text)
+    assert match is not None
+    assert llm._excluded_price_token(text, match) is False
+    # A volume label far behind a real price must not hide that price.
+    text = "volume was flat; price 6,500.25 holds"
+    match = re.search(re.escape("6,500.25"), text)
+    assert match is not None
+    assert llm._excluded_price_token(text, match) is False
+
+
 def test_validator_accepts_prose_price_at_allowed_level():
     p = {
         "highest_conviction": {"text": "Range near 64945", "confidence": 0.6},

@@ -490,7 +490,7 @@ Item {
           Caption { width: Style.space(56); text: "RSI" }
           Caption { width: Style.space(72); text: "MACD H" }
           Caption { width: Style.space(90); text: "TREND" }
-          Caption { width: indicatorCard.width - indicatorCard.pad * 2 - Style.space(40 + 80 + 56 + 72 + 90 + 64); text: "BB LOWER / MID / UPPER" }
+          Caption { width: indicatorCard.width - indicatorCard.pad * 2 - Style.space(40 + 80 + 56 + 72 + 90 + 64) - Style.space(8) * 6; text: "BB LOWER / MID / UPPER" }
           Caption { text: "ATR" }
         }
 
@@ -521,7 +521,7 @@ Item {
             }
             Body { anchors.verticalCenter: parent.verticalCenter; width: Style.space(72); text: view.num(indRow.modelData.hist, 2); font.pixelSize: Style.font.bodySmall }
             Body { anchors.verticalCenter: parent.verticalCenter; width: Style.space(90); elide: Text.ElideRight; text: String(indRow.modelData.trend); color: indRow.modelData.trend === "bullish" ? view.bullish : indRow.modelData.trend === "bearish" ? view.bearish : view.dim; font.pixelSize: Style.font.bodySmall }
-            Body { anchors.verticalCenter: parent.verticalCenter; width: indicatorCard.width - indicatorCard.pad * 2 - Style.space(40 + 80 + 56 + 72 + 90 + 64); elide: Text.ElideRight; text: String(indRow.modelData.bands); color: view.dim; font.pixelSize: Style.font.bodySmall }
+            Body { anchors.verticalCenter: parent.verticalCenter; width: indicatorCard.width - indicatorCard.pad * 2 - Style.space(40 + 80 + 56 + 72 + 90 + 64) - Style.space(8) * 6; elide: Text.ElideRight; text: String(indRow.modelData.bands); color: view.dim; font.pixelSize: Style.font.bodySmall }
             Body { anchors.verticalCenter: parent.verticalCenter; text: view.num(indRow.modelData.atr, 2); color: view.dim; font.pixelSize: Style.font.bodySmall }
           }
         }

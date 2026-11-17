@@ -77,6 +77,23 @@ PRICE_TOKEN_RE = re.compile(
 #: MACD, ATR) rather than a price.
 _INDICATOR_LABEL_RE = re.compile(r"(?i)\b(?:rsi|macd|atr)\b[^0-9]{0,16}$")
 
+#: A unit suffix attached to a number marks a size/flow quantity, not a price
+#: (e.g. "1,410.67M" of volume, "3,456.78B" market cap). The word boundary
+#: keeps ordinary words beginning with M/B/K from being mistaken for a suffix.
+_UNIT_SUFFIX_RE = re.compile(r"(?i)^[MBK]\b")
+
+#: Labels that mark a nearby number as volume/liquidity/funding/market-cap
+#: rather than a price. Matched against the text just before the number.
+_VOLUME_LABEL_RE = re.compile(
+    r"(?i)\b(?:volume|liquidity|funding|market\s*cap(?:italization)?)\b"
+)
+
+#: A genuine price word between a volume label and the number means the
+#: number is a real price — do not suppress it (e.g. "volume ...; price 6500").
+_PRICE_WORD_RE = re.compile(
+    r"(?i)\b(?:price|prices|support|resistance|entry|stop|target|low|high|level|levels|band|bands|close|zone)\b"
+)
+
 
 class LLMUnavailable(Exception):
     """No API key available, or the LLM HTTP call failed / reply was invalid."""
@@ -447,8 +464,10 @@ def _narrative_strings(node: object):
 
 def _excluded_price_token(text: str, match: re.Match) -> bool:
     """True for a numeric token that is obviously not a price: a percentage,
-    a ratio/probability, a plain four-digit year, or an indicator reading
-    explicitly labelled RSI/MACD/ATR.
+    a ratio/probability, a plain four-digit year, an indicator reading
+    explicitly labelled RSI/MACD/ATR, a number with an M/B/K size-unit suffix,
+    or one preceded shortly by a volume/liquidity/funding/market-cap label.
+    Ordinary prices are never excluded.
     """
     start, end = match.span()
     literal = match.group(0)
@@ -468,7 +487,18 @@ def _excluded_price_token(text: str, match: re.Match) -> bool:
         if 1900 <= int(literal) <= 2099:
             return True
     # An indicator value named just before the number: "RSI 4321", "ATR 2100".
-    if _INDICATOR_LABEL_RE.search(text[max(0, start - 32):start]):
+    before = text[max(0, start - 32):start]
+    if _INDICATOR_LABEL_RE.search(before):
+        return True
+    # "1,410.67M" / "3,456.78B" — an explicit size-unit suffix, not a price.
+    if _UNIT_SUFFIX_RE.match(text[end:end + 2]):
+        return True
+    # A volume/liquidity/funding/market-cap label just before the number marks
+    # it as a size measure. Skip that label when a genuine price word sits
+    # between it and the number, so real prices are never suppressed.
+    for label in _VOLUME_LABEL_RE.finditer(before):
+        if _PRICE_WORD_RE.search(before[label.end():]):
+            continue
         return True
     return False
 
