@@ -103,14 +103,27 @@ BarWidget {
     return label === "" ? s : s + " · " + label
   }
 
-  // Single-coin view used until the marquee rendering replaces it.
-  readonly property var report: reportFor(primaryCoin)
-  readonly property real price: priceFor(primaryCoin)
-  readonly property string bias: biasFor(primaryCoin)
-  readonly property string biasLabel:
-    bias === "bullish" ? "LONG" : bias === "bearish" ? "SHORT" : bias === "flat" ? "FLAT" : ""
-  readonly property color biasColor: biasColorFor(primaryCoin)
-  readonly property string figure: figureFor(primaryCoin)
+  // Marquee geometry. The strip holds one copy per coin followed by the same
+  // copy again, so scrolling exactly one copy width loops without a seam.
+  readonly property real viewportWidth: Style.space(240)
+  readonly property real figureWidth: Style.space(120)
+  readonly property real figureSpacing: Style.space(12)
+  readonly property real pxPerSec: 30
+  readonly property real copyWidth: coins.length * (figureWidth + figureSpacing)
+  property real offset: 0
+
+  onCopyWidthChanged: root.offset = root.offset % (root.copyWidth > 0 ? root.copyWidth : 1)
+
+  readonly property string tooltipText: {
+    if (!root.built) return "CRYPTO PLAYBOOK: not installed yet, open to set up"
+    if (!root.running) return "CRYPTO PLAYBOOK: daemon not running"
+    if (root.coins.length === 0) return "CRYPTO PLAYBOOK: no coins configured"
+    var snapsRef = root.snaps
+    var parts = []
+    for (var i = 0; i < root.coins.length; i++)
+      parts.push(root.coins[i] + " " + root.figureFor(root.coins[i]))
+    return "CRYPTO PLAYBOOK: " + parts.join("   |   ")
+  }
 
   implicitWidth: row.implicitWidth
   implicitHeight: button.implicitHeight
@@ -229,6 +242,7 @@ BarWidget {
     }
   }
 
+
   Row {
     id: row
     anchors.verticalCenter: parent.verticalCenter
@@ -241,28 +255,70 @@ BarWidget {
       // built still has something to click: the app is where the build is.
       text: "\uf201"
       labelVisible: false
-      tooltipText: !root.built ? "CRYPTO PLAYBOOK: not installed yet, open to set up"
-                 : !root.running ? "CRYPTO PLAYBOOK: daemon not running"
-                 : root.report && root.figure !== "—" && root.report.coin
-                   ? "CRYPTO PLAYBOOK: " + root.report.coin + " " + root.figure
-                     + (root.report.generated_at ? " since " + root.report.generated_at : "")
-                   : "CRYPTO PLAYBOOK: no report yet"
+      tooltipText: root.tooltipText
       dimmed: !root.running
       onPressed: root.toggleApp()
     }
 
-    Text {
+    Item {
+      id: viewport
       anchors.verticalCenter: parent.verticalCenter
+      width: root.viewportWidth
+      height: button.implicitHeight
+      clip: true
       visible: root.running
-      text: root.figure
-      // Longs read as accent, shorts as urgent, everything else as plain
-      // foreground — the theme's own tokens, never a fixed hex.
-      color: root.report ? root.biasColor : root.foreground
-      font.family: bar ? bar.fontFamily : Style.font.family
-      font.pixelSize: Style.font.bodySmall
-      rightPadding: Style.space(6)
+
+      Row {
+        id: ticker
+        anchors.verticalCenter: parent.verticalCenter
+        x: -root.offset
+        spacing: root.figureSpacing
+        Repeater {
+          // The snaps read keeps figures fresh after each refresh cycle.
+          model: { var latest = root.snaps; return root.coins.concat(root.coins) }
+          delegate: Item {
+            width: root.figureWidth
+            height: viewport.height
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width
+              elide: Text.ElideRight
+              text: root.figureFor(modelData)
+              // Longs read as accent, shorts as urgent, everything else as
+              // foreground — the theme's own tokens, never a fixed hex.
+              color: root.biasColorFor(modelData)
+              font.family: bar ? bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+        }
+      }
+
+      // A stepped offset keeps the wrap exact and makes hover pause simply a
+      // matter of stopping the clock — no animation restart/jump on resume.
+      Timer {
+        interval: 33
+        repeat: true
+        running: root.coins.length > 0 && root.running && !marqueeMouse.containsMouse
+        onTriggered: {
+          if (root.copyWidth > 0)
+            root.offset = (root.offset + root.pxPerSec * interval / 1000) % root.copyWidth
+        }
+      }
+
+      Text {
+        anchors.centerIn: parent
+        visible: root.coins.length === 0
+        text: "—"
+        color: root.foreground
+        font.family: bar ? bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.bodySmall
+      }
+
       MouseArea {
+        id: marqueeMouse
         anchors.fill: parent
+        hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: root.toggleApp()
       }
