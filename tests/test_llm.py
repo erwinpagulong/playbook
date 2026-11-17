@@ -4,6 +4,8 @@ All tests are offline: `_chat_completion` or `requests.post` are monkeypatched
 and the API key comes only from monkeypatched env vars.
 """
 
+import json
+
 import pytest
 import requests
 
@@ -15,6 +17,62 @@ from engine.llm import (
     call_llm,
     validate_prediction,
 )
+
+
+# --- provider keys / provider-failure classification --------------------------
+
+class FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.payload
+
+
+class FakeErrorResponse:
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self._body = body
+        self.text = body
+
+    def json(self):
+        return json.loads(self._body)
+
+    def raise_for_status(self):
+        raise requests.HTTPError(f"{self.status_code}", response=self)
+
+
+def test_explicit_key_is_used(monkeypatch):
+    seen = {}
+    def fake_post(url, json, headers, timeout):
+        seen["auth"] = headers["Authorization"]
+        return FakeResponse({"choices": [{"message": {"content": "{}"}}]})
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    llm.call_llm({"base_url": "https://x.test/v1", "model": "m", "api_key_env": "NOPE"}, "p", api_key="sk-explicit")
+    assert seen["auth"] == "Bearer sk-explicit"
+
+def test_env_fallback_when_no_keys_file(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.setattr(llm.requests, "post", lambda *a, **k: FakeResponse({"choices": [{"message": {"content": "{}"}}]}))
+    assert isinstance(llm.call_llm({"api_key_env": "OPENAI_API_KEY"}, "p"), dict)
+
+def test_quota_error_is_provider_failure(monkeypatch):
+    response = FakeErrorResponse(429, '{"error":{"code":"insufficient_quota"}}')
+    def fake_post(*a, **k): raise requests.HTTPError("429", response=response)
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    with pytest.raises(llm.LLMProviderError) as ei:
+        llm.call_llm({"api_key_env": "K"}, "p", api_key="v")
+    assert ei.value.status == 429 and ei.value.marker == "insufficient_quota"
+    assert llm.is_provider_failure(ei.value) is True
+
+def test_invalid_json_is_not_provider_failure(monkeypatch):
+    monkeypatch.setattr(llm.requests, "post", lambda *a, **k: FakeResponse({"choices": [{"message": {"content": "not json"}}]}))
+    with pytest.raises(llm.LLMUnavailable) as ei:
+        llm.call_llm({"api_key_env": "K"}, "p", api_key="v")
+    assert llm.is_provider_failure(ei.value) is False
 
 
 # --- brief: call_llm -------------------------------------------------------

@@ -17,7 +17,12 @@ quotes), which is serialized into the prompt along with an explicit
 ``call_llm`` talks to any OpenAI-compatible ``{base_url}/chat/completions``
 endpoint with ``response_format: {"type": "json_object"}``, raises
 ``LLMUnavailable`` when the configured key env var is missing/empty or the
-HTTP call fails, and never logs or stores the key value.
+HTTP call fails, and never logs or stores the key value. Provider-side
+failures (HTTP errors, transport/timeouts, quota/rate-limit markers in the
+body) raise ``LLMProviderError`` — a subclass of ``LLMUnavailable`` carrying
+``status`` and ``marker`` — so callers can distinguish them from invalid
+model output via ``is_provider_failure``. An explicit ``api_key`` argument
+wins over the environment; the key value never appears in any message.
 """
 
 from __future__ import annotations
@@ -74,27 +79,104 @@ _INDICATOR_LABEL_RE = re.compile(r"(?i)\b(?:rsi|macd|atr)\b[^0-9]{0,16}$")
 
 
 class LLMUnavailable(Exception):
-    """No API key in the environment, or the LLM HTTP call failed."""
+    """No API key available, or the LLM HTTP call failed / reply was invalid."""
+
+
+class LLMProviderError(LLMUnavailable):
+    """The provider failed: HTTP error, transport/timeout, or a quota/rate-limit
+    marker in the response body.
+
+    ``status`` is the HTTP status code, or ``None`` for transport/timeout
+    failures. ``marker`` is ``insufficient_quota`` or ``rate_limit`` when one
+    of those appears in the response body, else ``None``. Never carries the
+    API key value.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status: int | None = None,
+        marker: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.marker = marker
+
+
+def is_provider_failure(exc: BaseException) -> bool:
+    """True only for provider-side failures (``LLMProviderError``).
+
+    Plain ``LLMUnavailable`` (missing key, invalid JSON/shape) and validation
+    errors return False — those are not reasons to fall back to another
+    provider/model.
+    """
+    return isinstance(exc, LLMProviderError)
 
 
 # --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
 
-def _chat_completion(llm_config: dict, prompt: str) -> str:
-    """POST one chat completion; return the assistant message content text.
+def _resolve_api_key(llm_config: dict, api_key: str | None) -> str:
+    """Return the key to use: the explicit ``api_key`` when non-empty, else the
+    ``llm_config["api_key_env"]`` environment variable.
 
-    Raises ``LLMUnavailable`` when the key env var named by
-    ``llm_config["api_key_env"]`` is unset/empty, and ``requests``
-    transport/HTTP errors otherwise. The key value is only ever placed in the
-    Authorization header — never logged, printed, or stored.
+    Raises ``LLMUnavailable`` when neither is set. The key value itself is
+    never included in the message.
     """
+    if api_key is not None and api_key.strip():
+        return api_key
     key_env = llm_config.get("api_key_env") or ""
-    api_key = os.environ.get(key_env) or ""
-    if not api_key.strip():
+    env_key = os.environ.get(key_env) or ""
+    if not env_key.strip():
         raise LLMUnavailable(
             f"API key environment variable {key_env!r} is missing or empty"
         )
+    return env_key
+
+
+#: Error-body markers that identify quota/rate-limit provider failures.
+_PROVIDER_MARKERS = ("insufficient_quota", "rate_limit")
+
+
+def _error_marker(response: object) -> str | None:
+    """Extract a quota/rate-limit marker from an error response body, if any."""
+    if response is None:
+        return None
+    body = getattr(response, "text", None)
+    if not isinstance(body, str) or not body:
+        try:
+            body = json.dumps(response.json())
+        except Exception:
+            body = ""
+    for marker in _PROVIDER_MARKERS:
+        if marker in body:
+            return marker
+    return None
+
+
+def _provider_error_from_http(exc: requests.HTTPError) -> LLMProviderError:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    marker = _error_marker(response)
+    detail = f"HTTP {status}" if status is not None else "HTTP error"
+    if marker:
+        detail += f" ({marker})"
+    return LLMProviderError(f"LLM provider error: {detail}", status=status, marker=marker)
+
+
+def _chat_completion(llm_config: dict, prompt: str, api_key: str | None = None) -> str:
+    """POST one chat completion; return the assistant message content text.
+
+    Raises ``LLMUnavailable`` when no key is available (explicit ``api_key``
+    argument wins over ``llm_config["api_key_env"]``; both missing/empty
+    raises), and ``LLMProviderError`` when the provider HTTP call fails —
+    carrying ``status`` and a body ``marker`` (``insufficient_quota`` /
+    ``rate_limit``) when present; transport/timeout errors get
+    ``status=None``. The key value is only ever placed in the Authorization
+    header — never logged, printed, or stored.
+    """
+    key = _resolve_api_key(llm_config, api_key)
     base_url = str(llm_config.get("base_url") or "").rstrip("/")
     body = {
         "model": llm_config.get("model"),
@@ -102,16 +184,24 @@ def _chat_completion(llm_config: dict, prompt: str) -> str:
         "response_format": {"type": "json_object"},
         "temperature": 0.2,
     }
-    response = requests.post(
-        f"{base_url}/chat/completions",
-        json=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        timeout=llm_config.get("timeout_s", 60),
-    )
-    response.raise_for_status()
+    try:
+        response = requests.post(
+            f"{base_url}/chat/completions",
+            json=body,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            timeout=llm_config.get("timeout_s", 60),
+        )
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise _provider_error_from_http(exc) from exc
+    except requests.RequestException as exc:
+        # Transport/timeout: no response to inspect.
+        raise LLMProviderError(
+            "LLM provider request failed (transport/timeout)", status=None
+        ) from exc
     payload = response.json()
     return payload["choices"][0]["message"]["content"]
 
@@ -130,32 +220,42 @@ def _is_transient_http(exc: requests.RequestException) -> bool:
     return status == 429 or status >= 500
 
 
-def call_llm(llm_config: dict, prompt: str) -> dict:
+def _is_transient_provider(exc: LLMProviderError) -> bool:
+    """Same transient rule as ``_is_transient_http``, keyed off ``exc.status``."""
+    if exc.status is None:
+        return True
+    return exc.status == 429 or exc.status >= 500
+
+
+def call_llm(llm_config: dict, prompt: str, api_key: str | None = None) -> dict:
     """Call the configured chat endpoint and return the parsed JSON reply.
 
-    Raises ``LLMUnavailable`` when the API key env var is missing/empty, when
-    the HTTP call fails, or when the reply is not a JSON object. Transient
-    transport/timeout/5xx failures get bounded retries with short backoff;
-    a missing key and invalid JSON are never retried. The key value never
-    appears in any exception message.
+    Raises ``LLMUnavailable`` when no API key is available (explicit
+    ``api_key`` wins over the ``llm_config["api_key_env"]`` env var), when
+    the HTTP call fails, or when the reply is not a JSON object. Provider-side
+    failures raise ``LLMProviderError`` (a subclass of ``LLMUnavailable``, so
+    it propagates here unchanged) with ``status``/``marker`` set; transient
+    transport/timeout/429/5xx failures get bounded retries with short
+    backoff. A missing key and invalid JSON are never retried. The key value
+    never appears in any exception message.
     """
-    key_env = llm_config.get("api_key_env") or ""
-    if not (os.environ.get(key_env) or "").strip():
-        raise LLMUnavailable(
-            f"API key environment variable {key_env!r} is missing or empty"
-        )
+    _resolve_api_key(llm_config, api_key)  # fail fast; never retried
     raw = None
     for attempt in range(LLM_MAX_RETRIES + 1):
         try:
-            raw = _chat_completion(llm_config, prompt)
+            raw = _chat_completion(llm_config, prompt, api_key=api_key)
             break
+        except LLMProviderError as exc:
+            if attempt >= LLM_MAX_RETRIES or not _is_transient_provider(exc):
+                raise
+            # Transport/timeout/429/5xx failures can be transient; wait a
+            # little longer each time, with a hard cap on attempts and delay.
+            time.sleep(LLM_RETRY_BACKOFF_S * (attempt + 1))
         except LLMUnavailable:
             raise
         except requests.RequestException as exc:
             if attempt >= LLM_MAX_RETRIES or not _is_transient_http(exc):
                 raise LLMUnavailable(f"LLM call failed: {exc}") from exc
-            # Transport/timeout/5xx failures can be transient; wait a little
-            # longer each time, with a hard cap on attempts and delay.
             time.sleep(LLM_RETRY_BACKOFF_S * (attempt + 1))
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise LLMUnavailable(f"LLM call failed: {exc}") from exc
