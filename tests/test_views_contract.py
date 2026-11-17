@@ -71,6 +71,13 @@ def test_playbooks_source_fallback_ignores_default_risk_rules():
     assert "sourceDoc" in text and "hasSourceFallback" in text
 
 
+def test_predictions_conviction_row_has_explicit_width():
+    text = (ROOT / "views" / "Predictions.qml").read_text()
+    block = text.split('title: "HIGHEST CONVICTION"', 1)[1].split("// ---- scenarios", 1)[0]
+    row = block.split("Row {", 1)[1].strip().splitlines()
+    assert row[0].strip() == "width: parent.width"
+
+
 def test_app_loader_surfaces_view_load_errors():
     text = (ROOT / "App.qml").read_text()
     # A failed view load must reach the user, not a blank panel.

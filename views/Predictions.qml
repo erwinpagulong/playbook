@@ -200,6 +200,7 @@ Item {
         title: "HIGHEST CONVICTION"
 
         Row {
+          width: parent.width
           spacing: Style.space(16)
           Column {
             spacing: Style.space(2)
