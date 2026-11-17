@@ -21,6 +21,8 @@ DEFAULT_CONFIG: dict = {
     "coins": ["BTC/USDT", "ETH/USDT"],
     "interval_minutes": 60,
     "llm": {
+        "provider": "openai",
+        "fallback_provider": None,
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
         "api_key_env": "OPENAI_API_KEY",
@@ -115,5 +117,30 @@ def validate_config(config: dict) -> list[str]:
     model = llm.get("model")
     if not isinstance(model, str) or not model.strip():
         errors.append("model must be a non-empty string")
+
+    # Lazy import: engine.providers imports engine.keys, which imports this
+    # module — importing at module top would create an import cycle.
+    from engine.providers import PRESETS, is_valid_provider
+
+    provider = llm.get("provider")
+    if not is_valid_provider(provider):
+        errors.append(
+            f"provider must be one of {sorted(PRESETS)}, got {provider!r}"
+        )
+
+    fallback = llm.get("fallback_provider")
+    if fallback is not None and not is_valid_provider(fallback):
+        errors.append(
+            f"fallback_provider must be one of {sorted(PRESETS)} or null, "
+            f"got {fallback!r}"
+        )
+    elif (
+        fallback is not None
+        and isinstance(provider, str)
+        and fallback == provider
+    ):
+        errors.append(
+            f"fallback_provider must differ from provider, both are {provider!r}"
+        )
 
     return errors
