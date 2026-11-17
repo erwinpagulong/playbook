@@ -29,20 +29,24 @@ omarchy-shell shell rescanPlugins          # let the shell discover the plugin
 omarchy plugin enable windong.cryptoplaybook
 ```
 
-LLM predictions need an API key, and the daemon reads it from the environment at
-startup. Because the daemon is launched by Quickshell, the key must be in
-**Quickshell's own launch environment**: export `OPENAI_API_KEY` in the shell session
-that starts Omarchy/Quickshell (for example from your login shell profile) *before*
-starting the shell, then restart the shell so the daemon inherits the variable:
+LLM predictions need an API key for the active provider. The primary path is
+the in-app **API keys** screen: open the dashboard panel, go to *API keys*,
+paste your key for a provider (OpenAI, OpenRouter, DeepSeek, Groq, or a custom
+OpenAI-compatible endpoint), and you're done. Keys are stored in a private
+`keys.json` (mode `600`) under the data dir — never in the config, the reports,
+or the QML shell — and the daemon reads them at generation time. The *Model*
+screen picks which provider writes the prediction narrative and which one is
+tried when the active provider fails.
 
-```bash
-export OPENAI_API_KEY=sk-...               # only needed for LLM predictions
-# then restart Omarchy/Quickshell so the daemon picks the variable up
-```
-
-Exporting the key in a separate terminal after the shell is already running will not
-reach the daemon. Without the key in Quickshell's environment, only the deterministic
-playbooks are generated and the narrative prediction is skipped.
+The environment variable named by `llm.api_key_env` (`OPENAI_API_KEY` by
+default) still works as a **legacy fallback**: if no key is stored in
+`keys.json` for a provider, the daemon reads that variable at startup. Because
+the daemon is launched by Quickshell, such a variable must live in **Quickshell's
+own launch environment**: export it in the shell session that starts
+Omarchy/Quickshell (for example from your login shell profile) *before*
+starting the shell, then restart the shell so the daemon inherits it. Exporting
+it in a separate terminal after the shell is running will not reach the daemon,
+and a stored key always wins over the environment.
 
 The daemon starts with the Omarchy shell's background services and seeds two sample
 reports (BTC/USDT playbook + prediction) into an empty report store, so the panel
@@ -60,6 +64,8 @@ Missing keys fall back to these defaults:
   "coins": ["BTC/USDT", "ETH/USDT"],
   "interval_minutes": 60,
   "llm": {
+    "provider": "openai",
+    "fallback_provider": null,
     "base_url": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
     "api_key_env": "OPENAI_API_KEY",
@@ -77,15 +83,34 @@ atomically):
   '{"coins": ["BTC/USDT", "SOL/USDT"], "interval_minutes": 120}'
 ```
 
+### Providers and keys
+
+`llm.provider` selects which provider preset writes the prediction narrative;
+`llm.fallback_provider` names a second provider that is tried when the active
+one fails (set it to `null` to disable). Both must be one of the preset ids —
+`openai`, `openrouter`, `deepseek`, `groq`, or `custom` — and the fallback must
+differ from the active provider. Selecting a provider on the *Model* screen
+fills in that preset's `base_url` and `model`; the `custom` preset ships empty
+so you supply your own OpenAI-compatible endpoint (edited on the *API keys*
+screen or in the config). Provider keys are stored per provider in
+`$XDG_DATA_HOME/crypto-playbook/keys.json` (default
+`~/.local/share/crypto-playbook/keys.json`), shaped
+`{"providers": {"<id>": "<key>"}}` and kept mode `600`. Keys never appear in the
+config, the reports, the CLI output, or the UI — the daemon re-reads the file
+per request and only ever reports a boolean plus a masked hint.
+
 Notes on the LLM configuration: the only environment variable read by default is
-`OPENAI_API_KEY`, and only because `llm.api_key_env` names it — the key value is
-placed in the `Authorization` header and is never logged, printed, stored in the
-config, or included in reports. It must be exported into Quickshell's launch
-environment before the shell starts (see Install above), not just into a terminal.
-To use a different provider or model, edit
-`llm.base_url` / `llm.model` / `llm.api_key_env` / `llm.timeout_s` in
-`config.json` (or via `set-config`); `api_key_env` can name any environment
-variable you keep the key in. There are no `LLM_*` environment overrides.
+`OPENAI_API_KEY`, and only as a legacy fallback — the key value is placed in the
+`Authorization` header and is never logged, printed, stored in the config, or
+included in reports. The durable path is a stored key via the *API keys* screen
+or `playbook set-key`; a stored key wins over the environment. To use a different
+provider or model, edit `llm.provider` / `llm.base_url` / `llm.model` /
+`llm.api_key_env` / `llm.timeout_s` in `config.json` (or via `set-config`);
+`api_key_env` can name any environment variable you keep a fallback key in.
+There are no `LLM_*` environment overrides. When the active provider fails, the
+daemon retries the fallback (if configured) and records which provider answered
+via `prediction.provider` / `prediction.model` / `prediction.fallback_used` in
+the report.
 
 ### CLI cheat sheet
 
@@ -99,10 +124,16 @@ status             coins, interval, report count, run state
 coins              configured coins
 config             effective config (defaults merged)
 set-config <json>  validate + atomically save a config object
+providers          per-provider state: active/fallback, base_url, model, key set + masked hint
+set-key <id> <key> store a provider key in the private keys file (600)
+clear-key <id>     remove a stored provider key
 regenerate <coin>  kick off a background generation run
 export [dest]      copy the reports dir (default ~/Documents/crypto-playbook-export)
 delete-reports     remove generated reports (samples are kept)
 ```
+
+`set-key` sends the key in the request body only; the daemon answers with
+`{"ok":true}` and never echoes the key.
 
 Pass `-addr host:port` (before or after the command) to talk to a daemon on a
 non-default address. `playbookd -port 0` picks an ephemeral port and prints it on

@@ -110,9 +110,13 @@ Next steps:
   2. Enable the plugin (its bar widget and panel):
        omarchy plugin enable $PLUGIN_ID
   3. Set the API key for LLM-grounded predictions (never commit it):
-       export OPENAI_API_KEY=sk-...
-     Any OpenAI-compatible endpoint works: edit llm.base_url / llm.model /
-     llm.api_key_env in the config below to point at one.
+       open the dashboard panel -> API keys -> paste a key for your provider.
+     Keys live in a private 600 keys.json under the data dir, never in the
+     config or the reports. Any OpenAI-compatible endpoint works: pick
+     openai, openrouter, deepseek, groq, or custom on the Model screen
+     (or edit llm.provider / llm.base_url / llm.model in the config).
+     Legacy fallback: export OPENAI_API_KEY in Quickshell's launch
+     environment (e.g. your login shell profile) and restart the shell.
      Without a key the daemon still generates deterministic playbooks;
      only the narrative prediction is skipped.
   4. Query it from the shell or a terminal:
