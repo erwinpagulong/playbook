@@ -29,6 +29,22 @@ omarchy-shell shell rescanPlugins          # let the shell discover the plugin
 omarchy plugin enable windong.cryptoplaybook
 ```
 
+### Installed from the marketplace
+
+`omarchy plugin add <repo-url> --enable` only clones the repository; it does not
+run setup. After a marketplace install, run the bundled installer **once** before
+enabling the plugin:
+
+```bash
+~/.config/omarchy/plugins/windong.cryptoplaybook/install.sh
+omarchy-shell shell rescanPlugins
+omarchy plugin enable windong.cryptoplaybook
+```
+
+This generates the `bin/` wrappers and private `.venv` that the service needs.
+Until then the bar glyph shows a tooltip with the same command. The installer is
+idempotent, so it is safe to re-run after updates.
+
 ### Bar placement
 
 When installing through Omarchy (for example `omarchy plugin add <repo-url> --enable`),

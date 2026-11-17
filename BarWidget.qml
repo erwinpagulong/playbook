@@ -123,7 +123,7 @@ BarWidget {
   onCopyWidthChanged: root.offset = root.offset % (root.copyWidth > 0 ? root.copyWidth : 1)
 
   readonly property string tooltipText: {
-    if (!root.built) return "CRYPTO PLAYBOOK: not installed yet, open to set up"
+    if (!root.built) return "CRYPTO PLAYBOOK: setup needed — run ~/.config/omarchy/plugins/windong.cryptoplaybook/install.sh once"
     if (!root.running) return "CRYPTO PLAYBOOK: daemon not running"
     if (root.coins.length === 0) return "CRYPTO PLAYBOOK: no coins configured"
     var snapsRef = root.snaps
