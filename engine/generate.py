@@ -13,9 +13,15 @@ instead of racing; report ids (microsecond timestamps) stay distinct.
 LLM failures — missing key, transport errors, or grounding violations in
 the reply — never lose the report: the deterministic part is saved anyway
 with ``prediction.available = False`` and a short reason, which is also
-returned as ``error``. Reasons are exception messages that never contain
-an API key value (see `engine.llm`), and no environment value is ever
-logged here.
+returned as ``error``. The active provider (``config["llm"]["provider"]``)
+supplies the endpoint, model and key; on provider-side failures (auth,
+quota/rate-limit, 5xx, transport/timeout) a different
+``config["llm"]["fallback_provider"]`` is tried exactly once, and the report
+records which provider answered via ``prediction.provider`` /
+``prediction.model`` / ``prediction.fallback_used``. Invalid model output
+never triggers the fallback. Reasons are exception messages that never
+contain an API key value (see `engine.llm`), and no environment value is
+ever logged here.
 
 Candle fetch failures fall back to the local JSON cache via
 `engine.data.fetch_candles`; when the fetch layer itself raised, the cache
@@ -34,8 +40,10 @@ from pathlib import Path
 from engine import data, llm
 from engine.data import TIMEFRAMES
 from engine.indicators import analyze_timeframe
-from engine.llm import LLMUnavailable
+from engine.llm import LLMProviderError, LLMUnavailable, is_provider_failure
 from engine.levels import build_levels
+from engine.providers import provider_llm_config
+from engine.keys import key_for
 from engine.report import new_report, render_markdown, save_report
 
 log = logging.getLogger(__name__)
@@ -88,29 +96,102 @@ def _quotes_for(coin: str) -> list[dict]:
 # LLM prediction
 # --------------------------------------------------------------------------
 
-def _predict(config: dict, payload: dict) -> tuple[dict | None, str | None]:
-    """Grounded prediction for `payload`; ``(None, reason)`` on any failure.
+#: The fallback-applicable slice of provider failures (the `engine.llm`
+#: classifier is deliberately broader): auth/payment/quota/rate-limit
+#: statuses, any 5xx, ``status=None`` (transport/timeout), or a
+#: quota/rate-limit marker in the body. Anything else — e.g. HTTP 400 —
+#: is not a reason to try the fallback provider.
+def _fallback_eligible(exc: LLMProviderError) -> bool:
+    if exc.marker in ("insufficient_quota", "rate_limit"):
+        return True
+    if exc.status is None:
+        return True
+    return exc.status in (401, 402, 403, 429) or exc.status >= 500
+
+
+def _predict(
+    config: dict, payload: dict, keys_path: Path | None = None
+) -> tuple[dict | None, str | None, dict | None]:
+    """Grounded prediction for `payload`; ``(reply, None, meta)`` or ``(None, reason, meta)``.
+
+    Uses the active provider (``config["llm"]["provider"]``): its preset
+    endpoint/model (config ``base_url``/``model`` overrides for the active
+    provider are honored), with a key resolved from the keys file or the env
+    var. On a fallback-applicable provider failure (see
+    ``_fallback_eligible``) with a different ``config["llm"]["fallback_provider"]``
+    configured, the fallback provider is tried exactly once.
+
+    ``meta`` is ``{"provider": id, "model": str | None, "fallback_used": bool}``
+    for the attempt that produced the outcome — present for both success and
+    failure (last attempt wins); ``None`` only when no attempt could be
+    resolved. It is merged into ``report["prediction"]`` by the caller.
 
     The reason is a short human-readable string. It never carries an API
     key value: `llm.call_llm` keeps key values out of its messages and no
     environment value is read or formatted here.
     """
     llm_config = config.get("llm") if isinstance(config.get("llm"), dict) else {}
-    try:
-        reply = llm.call_llm(llm_config, llm.build_prompt(payload))
-    except LLMUnavailable as exc:
-        detail = str(exc).strip() or "LLM unavailable"
-        return None, f"prediction unavailable: {detail}"
-    except Exception as exc:  # noqa: BLE001 - any LLM error must not lose the report
-        detail = str(exc).strip() or exc.__class__.__name__
-        return None, f"prediction unavailable: {detail}"
-    if not isinstance(reply, dict):
-        return None, "prediction unavailable: LLM reply was not a JSON object"
-    errors = llm.validate_prediction(reply, llm.allowed_levels(payload))
-    if errors:
-        joined = "; ".join(str(error) for error in errors[:3])
-        return None, f"prediction failed validation: {joined}"
-    return reply, None
+    provider = llm_config.get("provider")
+    fallback = llm_config.get("fallback_provider")
+    prompt = llm.build_prompt(payload)
+
+    attempts: list[tuple[object, bool]] = [(provider, False)]
+    if (
+        isinstance(fallback, str)
+        and fallback
+        and isinstance(provider, str)
+        and fallback != provider
+    ):
+        attempts.append((fallback, True))
+
+    last_meta: dict | None = None
+    last_error: str | None = None
+    for pid, is_fallback in attempts:
+        try:
+            cfg = provider_llm_config(str(pid), config)
+        except ValueError as exc:
+            return None, f"prediction unavailable: {exc}", last_meta
+        meta = {
+            "provider": str(pid),
+            "model": cfg.get("model"),
+            "fallback_used": is_fallback,
+        }
+        last_meta = meta
+        key = key_for(str(pid), config, keys_path)
+        try:
+            reply = llm.call_llm(cfg, prompt, api_key=key)
+        except LLMProviderError as exc:
+            detail = str(exc).strip() or "LLM provider error"
+            last_error = f"prediction unavailable: {detail}"
+            if (
+                not is_fallback
+                and len(attempts) > 1
+                and is_provider_failure(exc)
+                and _fallback_eligible(exc)
+            ):
+                log.warning(
+                    "provider %s failed (%s); trying fallback %s once",
+                    pid,
+                    detail,
+                    fallback,
+                )
+                continue
+            return None, last_error, last_meta
+        except LLMUnavailable as exc:
+            detail = str(exc).strip() or "LLM unavailable"
+            return None, f"prediction unavailable: {detail}", last_meta
+        except Exception as exc:  # noqa: BLE001 - any LLM error must not lose the report
+            detail = str(exc).strip() or exc.__class__.__name__
+            return None, f"prediction unavailable: {detail}", last_meta
+        if not isinstance(reply, dict):
+            return None, "prediction unavailable: LLM reply was not a JSON object", last_meta
+        errors = llm.validate_prediction(reply, llm.allowed_levels(payload))
+        if errors:
+            joined = "; ".join(str(error) for error in errors[:3])
+            return None, f"prediction failed validation: {joined}", last_meta
+        return reply, None, meta
+
+    return None, last_error or "prediction unavailable: LLM unavailable", last_meta
 
 
 def _flatten(prediction: dict) -> dict:
@@ -160,16 +241,17 @@ def _generate(coin: str, config: dict, data_dir: Path) -> dict:
         "quotes": quotes,
     }
 
-    prediction, reason = _predict(config, payload)
+    prediction, reason, meta = _predict(config, payload)
     if reason:
         log.warning("prediction unavailable for %s: %s", coin, reason)
         problems.append(reason)
 
     report = new_report(coin, {"sources": quotes}, analysis, levels)
+    meta = meta or {}
     if prediction is None:
-        report["prediction"] = {"available": False, "reason": reason}
+        report["prediction"] = {"available": False, "reason": reason, **meta}
     else:
-        report["prediction"] = {**_flatten(prediction), "available": True}
+        report["prediction"] = {**_flatten(prediction), "available": True, **meta}
     report["markdown"] = render_markdown(report)
     save_report(data_dir, report)
 

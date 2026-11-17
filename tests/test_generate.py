@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from engine import data, llm
+from engine import data, llm, providers
 from engine.config import load_config
 from engine.data import DataUnavailable
 from engine.generate import generate_report
@@ -144,6 +144,95 @@ def test_total_data_failure_returns_error_without_report(monkeypatch, tmp_path):
     assert isinstance(result["error"], str) and result["error"]
     # nothing was persisted: there is no report to save
     assert list_reports(tmp_path) == []
+
+
+# --- brief: provider selection and fallback -----------------------------------
+
+def test_quota_failure_uses_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
+    calls = []
+    def fake_call(cfg, prompt, api_key=None):
+        calls.append((cfg["base_url"], api_key))
+        if len(calls) == 1: raise llm.LLMProviderError("429", status=429, marker="insufficient_quota")
+        return valid_prediction()
+    monkeypatch.setattr(llm, "call_llm", fake_call)
+    cfg = load_config(None)
+    cfg["llm"]["provider"] = "openrouter"; cfg["llm"]["fallback_provider"] = "deepseek"
+    result = generate_report("BTC/USDT", cfg, tmp_path)
+    assert len(calls) == 2
+    assert result["report"]["prediction"]["fallback_used"] is True
+    assert result["report"]["prediction"]["provider"] == "deepseek"
+
+
+def test_invalid_output_does_not_fall_back(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
+    calls = []
+    def fake_call(cfg, prompt, api_key=None):
+        calls.append(1)
+        return {"scenarios": [{"low": 99999, "high": 99999, "probability": 100}]}
+    monkeypatch.setattr(llm, "call_llm", fake_call)
+    cfg = load_config(None); cfg["llm"]["fallback_provider"] = "deepseek"
+    result = generate_report("BTC/USDT", cfg, tmp_path)
+    assert len(calls) == 1
+    assert result["report"]["prediction"]["available"] is False
+
+
+def test_active_provider_selects_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
+    seen = []
+    monkeypatch.setattr(llm, "call_llm", lambda cfg, p, api_key=None: (seen.append(cfg["base_url"]), valid_prediction())[1])
+    cfg = load_config(None); cfg["llm"]["provider"] = "deepseek"
+    # The Model screen writes the selected preset's base_url/model into the
+    # config (spec: "Selecting a provider/model fills its base URL and
+    # default model"); the active-provider overlay then honors them.
+    cfg["llm"]["base_url"] = providers.PRESETS["deepseek"]["base_url"]
+    cfg["llm"]["model"] = providers.PRESETS["deepseek"]["model"]
+    generate_report("BTC/USDT", cfg, tmp_path)
+    assert seen == [providers.PRESETS["deepseek"]["base_url"]]
+
+
+def test_bad_request_does_not_fall_back(monkeypatch, tmp_path):
+    """A provider error outside the fallback set (HTTP 400) never triggers fallback."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
+    calls = []
+    def fake_call(cfg, prompt, api_key=None):
+        calls.append(1)
+        raise llm.LLMProviderError("400", status=400)
+    monkeypatch.setattr(llm, "call_llm", fake_call)
+    cfg = load_config(None); cfg["llm"]["fallback_provider"] = "deepseek"
+    result = generate_report("BTC/USDT", cfg, tmp_path)
+    assert len(calls) == 1
+    assert result["report"]["prediction"]["available"] is False
+
+
+def test_unavailable_prediction_records_provider_and_model(monkeypatch, tmp_path):
+    """The unavailable path also records which provider/model was attempted."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
+    monkeypatch.setattr(
+        llm, "call_llm",
+        lambda *a, **k: (_ for _ in ()).throw(llm.LLMProviderError("429", status=429)),
+    )
+    cfg = load_config(None)
+    result = generate_report("BTC/USDT", cfg, tmp_path)
+    prediction = result["report"]["prediction"]
+    assert prediction["available"] is False
+    assert prediction["provider"] == "openai"
+    assert prediction["model"] == cfg["llm"]["model"]
+    assert prediction["fallback_used"] is False
+
+
+def test_no_fallback_configured_stays_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
+    monkeypatch.setattr(llm, "call_llm", lambda *a, **k: (_ for _ in ()).throw(llm.LLMProviderError("429", status=429)))
+    cfg = load_config(None)
+    result = generate_report("BTC/USDT", cfg, tmp_path)
+    assert result["report"]["prediction"]["available"] is False
 
 
 # --- brief: serialized generation -------------------------------------------
