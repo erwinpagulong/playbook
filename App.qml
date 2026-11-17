@@ -68,6 +68,11 @@ Item {
   property var snap: null
   // The daemon status document (coins, report count, run state, LLM key).
   property var status: null
+  // The provider roster from `playbook providers` (masked hints only), and
+  // the effective config from `playbook config`. Both are refreshed by
+  // refresh() so the Model and API keys screens can bind to them directly.
+  property var providers: []
+  property var cfg: null
   property string lastError: ""
   property string toast: ""
 
@@ -78,19 +83,33 @@ Item {
     if (!root.running) return
     if (!fetchProc.running) fetchProc.running = true
     if (!statusProc.running) statusProc.running = true
+    root.query(["providers"], function (data, err) {
+      // Keep the array identity stable when nothing changed: the API keys
+      // screen rebuilds its row delegates on assignment, and a timer-driven
+      // refresh must not eat a half-pasted key.
+      if (!err && Array.isArray(data) && JSON.stringify(data) !== JSON.stringify(root.providers))
+        root.providers = data
+    })
+    root.query(["config"], function (data, err) {
+      if (!err && data && typeof data === "object" && JSON.stringify(data) !== JSON.stringify(root.cfg))
+        root.cfg = data
+    })
   }
 
   // ---- derived report state
   readonly property var report: snap && snap.available === true ? snap.report : null
   readonly property bool hasReport: report !== null
-  // Only the report-driven views need a stored report. Coins, Settings and
-  // Data & Privacy are management screens and must stay reachable even when
-  // the store is empty (the "No playbook yet" state must not swallow them).
+  // Only the report-driven views need a stored report. Coins, Settings,
+  // Data & Privacy, Model and API keys are management screens and must stay
+  // reachable even when the store is empty (the "No playbook yet" state must
+  // not swallow them).
   readonly property bool needsReport: {
     switch (root.view) {
     case "coins":
     case "settings":
     case "privacy":
+    case "model":
+    case "apikeys":
       return false
     }
     return true
@@ -356,7 +375,9 @@ Item {
     { id: "coins", label: "Coins", key: "4", glyph: "\uf51e" },
     { id: "history", label: "History", key: "5", glyph: "\uf017" },
     { id: "settings", label: "Settings", key: "6", glyph: "\uf013" },
-    { id: "privacy", label: "Data & Privacy", key: "7", glyph: "\uf023" }
+    { id: "privacy", label: "Data & Privacy", key: "7", glyph: "\uf023" },
+    { id: "model", label: "Model", key: "8", glyph: "\uf2db" },
+    { id: "apikeys", label: "API keys", key: "9", glyph: "\uf084" }
   ]
   property string view: "dashboard"
   property int navCursor: 0
@@ -391,6 +412,8 @@ Item {
     case "history": return "History.qml"
     case "settings": return "Settings.qml"
     case "privacy": return "DataPrivacy.qml"
+    case "model": return "Model.qml"
+    case "apikeys": return "ApiKeys.qml"
     }
     return "Dashboard.qml"
   }

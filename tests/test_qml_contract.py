@@ -59,6 +59,13 @@ def test_daemon_process_inherits_llm_key_environment():
     assert "environment: root.childEnv" in daemon  # PATH/HOME/XDG still overridden
 
 
+def test_new_views_exist_and_are_management_screens():
+    app = (ROOT / "App.qml").read_text()
+    assert 'id: "model"' in app and 'id: "apikeys"' in app
+    block = app.split("readonly property bool needsReport:", 1)[1].split("}", 1)[0]
+    assert '"model"' in block and '"apikeys"' in block
+
+
 def test_management_views_are_not_gated_on_has_report():
     text = (ROOT / "App.qml").read_text()
     # Coins, Settings and Data & Privacy must open with an empty store.

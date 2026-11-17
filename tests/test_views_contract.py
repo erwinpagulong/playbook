@@ -9,6 +9,21 @@ def test_dashboard_renders_core_cards():
         assert label in text
 
 
+def test_api_keys_view_uses_key_commands():
+    text = (ROOT / "views/ApiKeys.qml").read_text()
+    assert 'set-key' in text and 'clear-key' in text and 'key_hint' in text
+
+
+def test_model_view_has_active_and_fallback():
+    text = (ROOT / "views/Model.qml").read_text()
+    assert 'fallback_provider' in text and 'provider' in text
+
+
+def test_no_full_key_literal_in_settings():
+    text = (ROOT / "views/Settings.qml").read_text()
+    assert "THE API KEY" not in text
+
+
 def test_settings_exposes_coin_interval_model():
     text = (ROOT / "views/Settings.qml").read_text()
     for key in ("coins", "interval_minutes", "model"):

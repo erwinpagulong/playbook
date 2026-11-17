@@ -6,9 +6,8 @@ import "../components"
 // Settings: the coin list, the generation interval, and the LLM model.
 // Every change goes through `playbook set-config`, which validates and
 // atomically replaces the whole config — so each edit merges over the
-// effective config read from `playbook config` first. The API key is NOT
-// here on purpose: it comes from the environment variable the daemon
-// reads at startup and is never stored by the plugin.
+// effective config read from `playbook config` first. The provider keys and
+// selection live on their own screens (API keys, Model); this one links there.
 Item {
   id: view
   property var app: null
@@ -87,10 +86,7 @@ Item {
   readonly property color dim: app ? app.dim : Color.foreground
   readonly property color dimmer: app ? app.dimmer : Color.foreground
   readonly property color accent: app ? app.accent : Color.accent
-  readonly property color urgent: app ? app.urgent : Color.urgent
   readonly property string ff: app ? app.fontFamily : Style.font.family
-  readonly property bool keyPresent: app ? app.status && app.status.llm_key_present === true : false
-  readonly property string keyEnv: app && app.llmKeyEnv ? app.llmKeyEnv : "OPENAI_API_KEY"
 
   component Caption: Text {
     color: view.dimmer
@@ -218,13 +214,10 @@ Item {
           TitledCard {
             app: view.app
             width: parent.width
-            title: "THE API KEY"
-            Body {
-              text: view.keyPresent ? "Set (" + view.keyEnv + ")" : "Missing (" + view.keyEnv + ")"
-              color: view.keyPresent ? view.accent : view.urgent
-            }
-            Note { width: parent.width; text: "The key is read from the environment variable " + view.keyEnv + " when the daemon starts. It is never written to the config file, the reports, or this window — that is why there is no field for it here." }
-            Note { width: parent.width; text: "Set it in the environment of whoever launches playbookd, then restart the daemon." }
+            title: "API KEYS"
+            Body { text: "Provider keys are managed on the API keys screen." }
+            Note { width: parent.width; text: "Keys are stored in a private file the daemon reads at startup — never in the config, the reports, or this window. Only a masked hint is shown; pick the active and fallback provider on the Model screen." }
+            Apply { text: "Open API keys"; onClicked: if (app) app.setView("apikeys") }
           }
 
           TitledCard {
