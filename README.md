@@ -29,6 +29,24 @@ omarchy-shell shell rescanPlugins          # let the shell discover the plugin
 omarchy plugin enable windong.cryptoplaybook
 ```
 
+### Bar placement
+
+When installing through Omarchy (for example `omarchy plugin add <repo-url> --enable`),
+Omarchy asks which bar section to place the widget in. The manifest's
+`barWidget.defaultSection` pre-selects `centerEnd` (beside the clock); choosing
+`center` in that prompt also lands in `centerEnd`, because `center` is the
+clock's own centered group. Available sections are `left`, `centerBegin`,
+`center`, `centerEnd`, `tray`, and `right`.
+
+If you installed with `./install.sh` (which skips Omarchy's placement prompt),
+or want to move the widget later, use:
+
+```bash
+omarchy bar move windong.cryptoplaybook --section right   # or left, centerBegin, centerEnd
+```
+
+The shell hot-reloads `shell.json`, so no restart is needed.
+
 LLM predictions need an API key for the active provider. The primary path is
 the in-app **API keys** screen: open the dashboard panel, go to *API keys*,
 paste your key for a provider (OpenAI, OpenRouter, DeepSeek, Groq, or a custom

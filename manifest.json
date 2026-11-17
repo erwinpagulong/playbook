@@ -18,6 +18,7 @@
   "barWidget": {
     "displayName": "Crypto Playbook",
     "description": "Latest crypto playbook at a glance; the dashboard opens as its own window",
+    "defaultSection": "centerEnd",
     "category": "Finance",
     "defaults": {
       "addr": "127.0.0.1:8099",
