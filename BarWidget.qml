@@ -4,7 +4,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// The glance: this coin's live price and the current bias, read from the
+// The glance: live prices and biases for every configured coin, read from the
 // daemon on a timer. Clicking opens the app as its own window.
 BarWidget {
   id: root
@@ -27,15 +27,25 @@ BarWidget {
                                         .replace(/^file:\/\//, "").replace(/\/$/, "")
   readonly property string helperPath: pluginDir + "/bin/playbook"
 
-  // The last read of `playbook latest`. Null until the daemon has answered
-  // once; {"available": false} when the store is empty.
-  property var snap: null
+  // Configured coins and the newest report for each, keyed by coin string.
+  // Null/unparseable replies are ignored so a transient daemon failure never
+  // replaces a good snapshot with a stale or invented number.
+  property var coins: []
+  property var snaps: ({})
+  property var latestQueue: []
+  property string pendingCoin: ""
 
-  readonly property var report: snap && snap.available === true ? snap.report : null
+  readonly property string primaryCoin: coins.length > 0 ? String(coins[0]) : ""
+
+  function reportFor(coin) {
+    var snap = snaps[coin]
+    return snap && snap.available === true ? snap.report : null
+  }
 
   // The price this report speaks about: the first live quote, falling back
   // to the indicator payload of the freshest timeframe when quotes failed.
-  readonly property real price: {
+  function priceFor(coin) {
+    var report = reportFor(coin)
     if (!report) return NaN
     var sources = report.snapshot && report.snapshot.sources
     if (Array.isArray(sources)) {
@@ -56,7 +66,8 @@ BarWidget {
 
   // The bias, from the daily trend first and the faster timeframes behind
   // it. bullish = LONG (accent), bearish = SHORT (urgent), flat = neutral.
-  readonly property string bias: {
+  function biasFor(coin) {
+    var report = reportFor(coin)
     if (!report) return ""
     var ind = report.indicators || {}
     var order = ["1D", "4h", "15m"]
@@ -69,17 +80,10 @@ BarWidget {
     }
     return ""
   }
-  readonly property string biasLabel:
-    bias === "bullish" ? "LONG" : bias === "bearish" ? "SHORT" : bias === "flat" ? "FLAT" : ""
-  readonly property color biasColor:
-    bias === "bullish" ? accent : bias === "bearish" ? urgent : foreground
 
-  // What the bar shows. A dash until the daemon answers, so a fresh install
-  // shows a placeholder rather than a stale or invented number.
-  readonly property string figure: {
-    if (!isFinite(price)) return "—"
-    var s = formatPrice(price)
-    return biasLabel === "" ? s : s + " · " + biasLabel
+  function biasColorFor(coin) {
+    var b = biasFor(coin)
+    return b === "bullish" ? accent : b === "bearish" ? urgent : foreground
   }
 
   function formatPrice(p) {
@@ -90,6 +94,24 @@ BarWidget {
     return parts.join(".")
   }
 
+  function figureFor(coin) {
+    var p = priceFor(coin)
+    if (!isFinite(p)) return "—"
+    var s = formatPrice(p)
+    var b = biasFor(coin)
+    var label = b === "bullish" ? "LONG" : b === "bearish" ? "SHORT" : b === "flat" ? "FLAT" : ""
+    return label === "" ? s : s + " · " + label
+  }
+
+  // Single-coin view used until the marquee rendering replaces it.
+  readonly property var report: reportFor(primaryCoin)
+  readonly property real price: priceFor(primaryCoin)
+  readonly property string bias: biasFor(primaryCoin)
+  readonly property string biasLabel:
+    bias === "bullish" ? "LONG" : bias === "bearish" ? "SHORT" : bias === "flat" ? "FLAT" : ""
+  readonly property color biasColor: biasColorFor(primaryCoin)
+  readonly property string figure: figureFor(primaryCoin)
+
   implicitWidth: row.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -98,9 +120,18 @@ BarWidget {
       bar.shell.toggle("windong.cryptoplaybook", "{}")
   }
 
+  function pumpQueue() {
+    if (!root.running || coinsProc.running || latestProc.running) return
+    if (root.latestQueue.length === 0) return
+    var coin = root.latestQueue.shift()
+    root.pendingCoin = coin
+    latestProc.command = [root.helperPath, "latest", coin, "-addr", root.addr]
+    latestProc.running = true
+  }
+
   function refresh() {
-    if (!root.running || fetchProc.running) return
-    fetchProc.running = true
+    if (!root.running || coinsProc.running || latestProc.running) return
+    coinsProc.running = true
   }
 
   onRunningChanged: if (running) Qt.callLater(root.refresh)
@@ -120,17 +151,31 @@ BarWidget {
     "XDG_DATA_HOME": Quickshell.env("XDG_DATA_HOME") || ""
   })
 
+  // The configured coin list. Re-read on every refresh so Settings changes
+  // are picked up without restarting the shell.
   Process {
-    id: fetchProc
-    command: [root.helperPath, "latest", "-addr", root.addr]
+    id: coinsProc
+    command: [root.helperPath, "coins", "-addr", root.addr]
     clearEnvironment: true
     environment: root.childEnv
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         var raw = String(text || "").trim()
-        if (raw === "") return
-        try { root.snap = JSON.parse(raw) } catch (e) { root.snap = null }
+        if (raw !== "") {
+          try {
+            var parsed = JSON.parse(raw)
+            if (Array.isArray(parsed)) {
+              var list = []
+              for (var i = 0; i < parsed.length; i++) {
+                if (typeof parsed[i] === "string" && parsed[i] !== "") list.push(parsed[i])
+              }
+              root.coins = list
+            }
+          } catch (e) { /* keep the previous list */ }
+        }
+        root.latestQueue = root.coins.slice()
+        root.pumpQueue()
       }
     }
   }
@@ -139,8 +184,49 @@ BarWidget {
   Timer {
     interval: 15000
     repeat: false
-    running: fetchProc.running
-    onTriggered: if (fetchProc.running) fetchProc.running = false
+    running: coinsProc.running
+    onTriggered: {
+      if (coinsProc.running) coinsProc.running = false
+      root.latestQueue = root.coins.slice()
+      root.pumpQueue()
+    }
+  }
+
+  Process {
+    id: latestProc
+    command: []
+    clearEnvironment: true
+    environment: root.childEnv
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var coin = root.pendingCoin
+        root.pendingCoin = ""
+        var raw = String(text || "").trim()
+        if (coin !== "" && raw !== "") {
+          try {
+            var parsed = JSON.parse(raw)
+            if (parsed && typeof parsed === "object") {
+              var copy = Object.assign({}, root.snaps)
+              copy[coin] = parsed
+              root.snaps = copy
+            }
+          } catch (e) { /* keep the previous snapshot for this coin */ }
+        }
+        root.pumpQueue()
+      }
+    }
+  }
+
+  Timer {
+    interval: 15000
+    repeat: false
+    running: latestProc.running
+    onTriggered: {
+      if (latestProc.running) latestProc.running = false
+      root.pendingCoin = ""
+      root.pumpQueue()
+    }
   }
 
   Row {
