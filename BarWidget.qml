@@ -216,15 +216,18 @@ BarWidget {
         var coin = root.pendingCoin
         root.pendingCoin = ""
         var raw = String(text || "").trim()
-        if (coin !== "" && raw !== "") {
-          try {
-            var parsed = JSON.parse(raw)
-            if (parsed && typeof parsed === "object") {
-              var copy = Object.assign({}, root.snaps)
-              copy[coin] = parsed
-              root.snaps = copy
-            }
-          } catch (e) { /* keep the previous snapshot for this coin */ }
+        if (coin !== "") {
+          var copy = Object.assign({}, root.snaps)
+          if (raw !== "") {
+            try {
+              var parsed = JSON.parse(raw)
+              if (parsed && typeof parsed === "object") copy[coin] = parsed
+              else delete copy[coin]
+            } catch (e) { delete copy[coin] }
+          } else {
+            delete copy[coin]
+          }
+          root.snaps = copy
         }
         root.pumpQueue()
       }
@@ -275,7 +278,7 @@ BarWidget {
         spacing: root.figureSpacing
         Repeater {
           // The snaps read keeps figures fresh after each refresh cycle.
-          model: { var latest = root.snaps; return root.coins.concat(root.coins) }
+          model: { var latest = root.snaps; return root.coins.length > 1 ? root.coins.concat(root.coins) : [] }
           delegate: Item {
             width: root.figureWidth
             height: viewport.height
@@ -299,7 +302,7 @@ BarWidget {
       Timer {
         interval: 33
         repeat: true
-        running: root.coins.length > 0 && root.running && !marqueeMouse.containsMouse
+        running: root.coins.length > 1 && root.running && !marqueeMouse.containsMouse
         onTriggered: {
           if (root.copyWidth > 0)
             root.offset = (root.offset + root.pxPerSec * interval / 1000) % root.copyWidth
@@ -308,9 +311,9 @@ BarWidget {
 
       Text {
         anchors.centerIn: parent
-        visible: root.coins.length === 0
-        text: "—"
-        color: root.foreground
+        visible: root.coins.length < 2
+        text: root.coins.length === 1 ? root.figureFor(root.coins[0]) : "—"
+        color: root.coins.length === 1 ? root.biasColorFor(root.coins[0]) : root.foreground
         font.family: bar ? bar.fontFamily : Style.font.family
         font.pixelSize: Style.font.bodySmall
       }
