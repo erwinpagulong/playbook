@@ -16,6 +16,7 @@ import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -92,6 +93,10 @@ class Client:
 
     @staticmethod
     def _send(request) -> Response:
+        # Read on every call: a test may start a second daemon in the same XDG
+        # sandbox, which rotates the token file.
+        token = daemon_token_path().read_text(encoding="utf-8").strip()
+        request.add_header("Authorization", f"Bearer {token}")
         try:
             with OPENER.open(request, timeout=10) as response:
                 return Response(response.status, response.read())
@@ -643,9 +648,17 @@ def test_playbookd_serves_seeded_api_on_ephemeral_port(BIN, tmp_path):
         match = re.search(r"listening on 127\.0\.0\.1:(\d+)", first_line[0])
         assert match, f"unexpected startup line: {first_line[0]!r}"
         base = f"http://127.0.0.1:{match.group(1)}"
-        with OPENER.open(base + "/api/health", timeout=10) as response:
+        # The child daemon has its own XDG_DATA_HOME, distinct from the test's.
+        token_file = Path(env["XDG_DATA_HOME"]) / "crypto-playbook" / "daemon.token"
+        token = token_file.read_text(encoding="utf-8").strip()
+        auth_headers = {"Authorization": f"Bearer {token}"}
+        with OPENER.open(
+            urllib.request.Request(base + "/api/health", headers=auth_headers), timeout=10
+        ) as response:
             assert json.loads(response.read()) == {"status": "ok"}
-        with OPENER.open(base + "/api/latest", timeout=10) as response:
+        with OPENER.open(
+            urllib.request.Request(base + "/api/latest", headers=auth_headers), timeout=10
+        ) as response:
             latest = json.loads(response.read())
         # startup seeded the samples and served them without any network call
         assert latest["available"] is True
@@ -698,14 +711,94 @@ def test_set_key_rejects_unknown_provider(tmp_path):
 
 
 def test_cli_key_commands(client_addr, tmp_path, BIN):
-    out = subprocess.check_output(
-        [str(BIN / "playbook"), "set-key", "openrouter", "sk-1234", "-addr", client_addr],
+    result = subprocess.run(
+        [str(BIN / "playbook"), "set-key", "openrouter", "-addr", client_addr],
+        input="sk-1234\n",
+        capture_output=True,
         text=True,
+        timeout=30,
     )
-    assert json.loads(out)["ok"] is True
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["ok"] is True
     rows = json.loads(
         subprocess.check_output(
             [str(BIN / "playbook"), "providers", "-addr", client_addr], text=True
         )
     )
     assert any(r["id"] == "openrouter" for r in rows)
+
+
+# --- loopback authentication and key-on-stdin (marketplace review) -----------
+
+
+def daemon_token_path() -> Path:
+    """The token file path, derived independently of the daemon's helpers."""
+    return Path(os.environ["XDG_DATA_HOME"]) / "crypto-playbook" / "daemon.token"
+
+
+def test_daemon_writes_a_private_token_file(client):
+    path = daemon_token_path()
+    token = path.read_text(encoding="utf-8").strip()
+    assert len(token) >= 32  # unguessable, not a fixed or short value
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_daemon_rejects_unauthenticated_get(server, data_dir):
+    report.seed_samples(data_dir)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    request = urllib.request.Request(base + "/api/config", method="GET")
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        OPENER.open(request, timeout=10)
+    assert excinfo.value.code == 401
+    assert "error" in json.loads(excinfo.value.read())
+
+
+def test_daemon_rejects_unauthenticated_config_write(tmp_path, client, server):
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    body = json.dumps({"interval_minutes": 15}).encode("utf-8")
+    request = urllib.request.Request(
+        base + "/api/config",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        OPENER.open(request, timeout=10)
+    assert excinfo.value.code == 401
+    # The authenticated owner's config is untouched.
+    assert client.get("/api/config").json()["interval_minutes"] == 60
+
+
+def test_cli_sends_the_daemon_token(BIN, addr):
+    """The CLI must authenticate with the file the daemon published, so every
+    endpoint works for the shell helper but not for an arbitrary loopback peer.
+    """
+    daemon_token_path().write_text("not-the-daemon-token\n", encoding="utf-8")
+    result = run_cli(BIN, "status", addr=addr)
+    assert result.returncode != 0
+    assert "error" in json.loads(result.stdout)
+
+
+def test_cli_set_key_reads_key_from_stdin(client_addr, BIN):
+    result = subprocess.run(
+        [str(BIN / "playbook"), "set-key", "openrouter", "-addr", client_addr],
+        input="sk-from-stdin-9876\n",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"ok": True}
+    rows = json.loads(
+        subprocess.check_output(
+            [str(BIN / "playbook"), "providers", "-addr", client_addr], text=True
+        )
+    )
+    row = next(r for r in rows if r["id"] == "openrouter")
+    assert row["key_hint"] == "sk-…9876"
+    assert "sk-from-stdin-9876" not in result.stdout
+
+
+def test_cli_set_key_refuses_key_in_argv(BIN, client_addr):
+    result = run_cli(BIN, "set-key", "openrouter", "sk-in-argv-1234", addr=client_addr)
+    assert result.returncode != 0  # a positional key would be world-readable

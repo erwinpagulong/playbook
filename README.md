@@ -95,7 +95,11 @@ packages pinned in `requirements.txt`: `pandas`, `numpy`, `requests`, and
 at runtime.
 
 The QML shell only talks to the daemon on loopback (`127.0.0.1:8099`); it never
-makes a network request itself. The daemon fetches public market data on a
+makes a network request itself. Loopback is not access control on a shared
+machine, so the daemon generates a random token on each start and stores it in
+`$XDG_DATA_HOME/crypto-playbook/daemon.token` with mode `600`. Every CLI call
+sends that token in an `Authorization: Bearer` header; another local account
+cannot read the file and cannot call your daemon. The daemon fetches public market data on a
 schedule or when you regenerate a report:
 
 - Candles: the public Binance REST API, with Yahoo Finance (via `yfinance`) as
@@ -182,15 +186,20 @@ coins              configured coins
 config             effective config (defaults merged)
 set-config <json>  validate + atomically save a config object
 providers          per-provider state: active/fallback, base_url, model, key set + masked hint
-set-key <id> <key> store a provider key in the private keys file (600)
+set-key <id>     store a provider key from stdin in the private keys file (600)
 clear-key <id>     remove a stored provider key
 regenerate <coin>  kick off a background generation run
 export [dest]      copy the reports dir (default ~/Documents/crypto-playbook-export)
 delete-reports     remove generated reports (samples are kept)
 ```
 
-`set-key` sends the key in the request body only; the daemon answers with
-`{"ok":true}` and never echoes the key.
+`set-key` reads the key from stdin (one line, not an argument — process arguments
+are visible to other local accounts) and sends it in the request body only; the
+daemon answers with `{"ok":true}` and never echoes the key. For example:
+
+```bash
+printf '%s\n' 'sk-your-key' | ~/.config/omarchy/plugins/windong.cryptoplaybook/bin/playbook set-key openai
+```
 
 Pass `-addr host:port` (before or after the command) to talk to a daemon on a
 non-default address. `playbookd -port 0` picks an ephemeral port and prints it on

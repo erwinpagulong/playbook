@@ -1,7 +1,9 @@
 """Loopback JSON daemon: HTTP API, generation scheduler, CLI target.
 
 `build_server` binds a `ThreadingHTTPServer` on 127.0.0.1 and routes a
-small JSON API that the QML panel consumes through `engine.cli`:
+small JSON API that the QML panel consumes through `engine.cli`. Every
+request must carry the private token published by `engine.auth`; loopback
+alone is not access control on a shared machine:
 
     GET  /api/health          liveness probe -> {"status": "ok"}
     GET  /api/status          coins, interval, report count, run state
@@ -30,6 +32,7 @@ handlers catch their own errors instead of dropping the connection.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import logging
 import shutil
@@ -39,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from engine import generate, report
+from engine import auth, generate, report
 from engine.config import (
     COIN_PATTERN,
     data_path,
@@ -122,10 +125,13 @@ class PlaybookServer(ThreadingHTTPServer):
     with a run in flight for ``GET /api/status``.
     """
 
-    def __init__(self, server_address, handler_class, config, data_dir):
+    def __init__(self, server_address, handler_class, config, data_dir, token):
         super().__init__(server_address, handler_class)
         self.config = config
         self.data_dir = Path(data_dir)
+        # Per-process secret for loopback callers; only the same account can
+        # read the file the CLI uses to learn it (see engine.auth).
+        self.auth_token = token
         self.stop_event = threading.Event()
         self.state_lock = threading.Lock()
         self.generating: set[str] = set()
@@ -249,6 +255,19 @@ class PlaybookHandler(BaseHTTPRequestHandler):
         if send_body:
             self.wfile.write(body)
 
+    def _authorized(self) -> bool:
+        """Whether the caller presented this daemon's private bearer token."""
+        supplied = self.headers.get("Authorization", "")
+        token = getattr(self.server, "auth_token", "")
+        return bool(token) and hmac.compare_digest(supplied, f"Bearer {token}")
+
+    def _reject_unauthorized(self) -> bool:
+        """Answer 401 and return True when the caller has no valid token."""
+        if self._authorized():
+            return False
+        self._send(401, {"error": "unauthorized"})
+        return True
+
     def _json_body(self):
         """Parsed request body; a dict, or None when empty/invalid/non-object."""
         length = int(self.headers.get("Content-Length") or 0)
@@ -267,6 +286,8 @@ class PlaybookHandler(BaseHTTPRequestHandler):
         parts = urlsplit(self.path)
         route = parts.path
         query = parse_qs(parts.query)
+        if self._reject_unauthorized():
+            return
         try:
             if route == "/api/health":
                 self._send(200, {"status": "ok"})
@@ -366,6 +387,8 @@ class PlaybookHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parts = urlsplit(self.path)
         route = parts.path
+        if self._reject_unauthorized():
+            return
         try:
             if route == "/api/regenerate":
                 body = self._json_body()
@@ -524,9 +547,13 @@ def build_server(
 
     The server is created and bound (always on 127.0.0.1) but not served:
     callers run ``serve_forever`` themselves. Tests pass ``port=0`` to get
-    an ephemeral port; ``main`` uses ``DEFAULT_PORT``.
+    an ephemeral port; ``main`` uses ``DEFAULT_PORT``. A fresh bearer token
+    is published for the CLI before the socket starts accepting requests.
     """
-    return PlaybookServer((DEFAULT_HOST, port), PlaybookHandler, config, data_dir)
+    token = auth.issue_token()
+    return PlaybookServer(
+        (DEFAULT_HOST, port), PlaybookHandler, config, data_dir, token
+    )
 
 
 def main(argv=None) -> int:
