@@ -93,11 +93,20 @@ has content on first launch.
 
 ## Dependencies and network access
 
-`install.sh` needs Python 3 and `pip`. It creates a private `.venv` inside the
+`install.sh` needs Python 3.11.5 or newer and `pip` (the pinned runtime lock
+requires at least 3.11.5). It creates a private `.venv` inside the
 plugin directory (with real interpreter binaries, no symlinks) and installs the
-packages pinned in `requirements.txt`: `pandas`, `numpy`, `requests`, and
-`yfinance`. `pytest` is included for running the test suite and is not needed
-at runtime.
+runtime dependencies from `requirements.txt`: `pandas`, `numpy`, `requests`, and
+`yfinance`, plus their transitive dependencies. Every package is pinned to an
+exact version with a sha256 hash, and setup uses `--require-hashes`, so an
+install is deterministic and reviewable. `pytest` is test-only: it lives in
+`requirements-dev.txt` and is never installed by the plugin setup. The
+`requirements.in` / `requirements-dev.in` files are the editable inputs for
+regenerating the locks with `pip-compile --generate-hashes`.
+
+When installing from a separate checkout, the installer stages the replacement
+files and only swaps them in once all copies succeed. A failed or interrupted
+copy therefore leaves the previous installation (and any local edits) intact.
 
 The QML shell only talks to the daemon on loopback (`127.0.0.1:8099`); it never
 makes a network request itself. Loopback is not access control on a shared

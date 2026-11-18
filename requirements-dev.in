@@ -1,0 +1,2 @@
+# Test-only dependencies. Keep these out of the runtime requirements.txt.
+pytest==9.2.0
