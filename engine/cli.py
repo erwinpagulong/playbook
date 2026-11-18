@@ -20,19 +20,24 @@ command:
     playbook set-key <provider>          # key is read from stdin, never argv
     playbook clear-key <provider>
 
-Every request carries the private bearer token published by the daemon in
-`$XDG_DATA_HOME/crypto-playbook/daemon.token`. Loopback calls never consult
-proxy environment variables.
+Before sending the private bearer token published in
+`$XDG_DATA_HOME/crypto-playbook/daemon.token` — and before sending a provider
+key — every call makes the listener prove it holds that token: the CLI sends a
+fresh nonce to `GET /api/hello` and checks the HMAC answer on the same
+connection. A stale token file left behind by a daemon that exited abnormally
+therefore cannot be used to hand secrets to a replacement listener. Loopback
+calls never consult proxy environment variables.
 """
 
 from __future__ import annotations
 
 import argparse
+import hmac
+import http.client
 import json
+import secrets
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 
 from engine import auth
 
@@ -41,12 +46,13 @@ TIMEOUT_S = 60
 #: A provider key is one line; guard against unbounded stdin on a stuck caller.
 MAX_KEY_CHARS = 8192
 
-#: Loopback-only opener: the daemon must never be reached via http_proxy.
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
 
 class DaemonUnreachable(RuntimeError):
     """The daemon could not be contacted at all (refused, timed out...)."""
+
+
+class DaemonUnverified(RuntimeError):
+    """The listener did not prove it holds the daemon's live token."""
 
 
 def _compact(payload) -> str:
@@ -60,31 +66,80 @@ def _path(base: str, params: dict | None = None) -> str:
     return base + "?" + urllib.parse.urlencode(params)
 
 
+def _split_addr(addr: str) -> tuple[str, int]:
+    """Split ``HOST:PORT`` (``[v6]:port`` allowed) for ``http.client``."""
+    host, sep, port_text = addr.rpartition(":")
+    if not sep or not host or not port_text.isdigit():
+        raise ValueError(f"invalid daemon address: {addr}")
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    return host, int(port_text)
+
+
+def _verify_daemon(conn: http.client.HTTPConnection, token: str) -> None:
+    """Make the listener prove it holds ``token`` before sending it anything.
+
+    The nonce request carries no credential. Only a process that read the
+    daemon's 0600 token file can return the matching HMAC, so a listener
+    squatting on the port after an abnormal daemon exit cannot pass. The
+    caller keeps this connection for the real request, so the verified peer
+    is also the peer that receives it; a response that closes the socket is
+    rejected instead of letting the client reconnect to someone else.
+    """
+    nonce = secrets.token_hex(32)
+    conn.request("GET", f"/api/hello?nonce={nonce}")
+    response = conn.getresponse()
+    raw = response.read()
+    supplied = ""
+    if response.status == 200:
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("proof"), str):
+            supplied = payload["proof"]
+    # ``will_close`` matters: the bearer token and body must follow on this
+    # very socket, not on a reconnection http.client would make to a listener
+    # that took the port after the proof.
+    if response.will_close or not hmac.compare_digest(
+        supplied, auth.proof(token, nonce)
+    ):
+        raise DaemonUnverified(
+            "daemon identity could not be verified; restart the daemon"
+        )
+
+
 def _request(
     addr: str, method: str, path: str, payload=None, token: str = ""
 ) -> tuple[int, bytes]:
-    """One HTTP call; returns ``(status, raw body)``.
+    """One verified HTTP call; returns ``(status, raw body)``.
 
-    HTTP error responses are returned like any other answer (they carry a
-    JSON body too); only a failure to reach the daemon raises.
+    The listener proves it holds ``token`` on the same connection before the
+    Authorization header or request body is sent. HTTP error responses are
+    returned like any other answer (they carry a JSON body too); only a
+    failure to reach or verify the daemon raises.
     """
-    url = f"http://{addr}{path}"
+    try:
+        host, port = _split_addr(addr)
+    except ValueError as error:
+        raise DaemonUnreachable(str(error)) from error
     data = None
     headers = {"Authorization": f"Bearer {token}"}
     if method == "POST":
         data = _compact(payload if payload is not None else {}).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    conn = http.client.HTTPConnection(host, port, timeout=TIMEOUT_S)
     try:
-        with _OPENER.open(request, timeout=TIMEOUT_S) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as error:  # subclass of URLError: catch first
-        return error.code, error.read()
-    except (urllib.error.URLError, OSError) as error:
-        reason = getattr(error, "reason", None) or error
+        _verify_daemon(conn, token)
+        conn.request(method, path, body=data, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read()
+    except (http.client.HTTPException, OSError) as error:
         raise DaemonUnreachable(
-            f"cannot reach playbook daemon at {addr}: {reason}"
+            f"cannot reach playbook daemon at {addr}: {error}"
         ) from error
+    finally:
+        conn.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -196,7 +251,7 @@ def main(argv=None) -> int:
 
     try:
         status, raw = _request(args.addr, method, path, payload, token)
-    except DaemonUnreachable as error:
+    except (DaemonUnreachable, DaemonUnverified) as error:
         print(_compact({"error": str(error)}))
         return 1
     try:

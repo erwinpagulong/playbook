@@ -8,16 +8,35 @@ every API request. `playbook` reads the same file and sends the token in an
 ``Authorization: Bearer`` header. Loopback alone is not access control: any
 local account can connect to 127.0.0.1, but it cannot read another account's
 0600 token file.
+
+The token file can outlive a daemon that exits without cleaning up, so the CLI
+does not trust its presence: before sending the token or a provider key it
+sends a fresh nonce to the listener and requires an HMAC of that nonce under
+the token (`proof`). A replacement listener cannot answer without the token.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import secrets
 import tempfile
 from pathlib import Path
 
 from engine.config import data_path
+
+
+def proof(token: str, nonce: str) -> str:
+    """Hex HMAC-SHA256 of ``nonce`` under ``token`` (daemon identity proof).
+
+    Only a process that read the daemon's 0600 token file can produce the
+    matching value for a fresh nonce, so it lets the CLI verify the listener
+    before sending any secret. The nonce is never secret.
+    """
+    return hmac.new(
+        token.encode("ascii"), nonce.encode("ascii"), hashlib.sha256
+    ).hexdigest()
 
 
 def token_path(path: Path | None = None) -> Path:
