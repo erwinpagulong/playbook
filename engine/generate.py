@@ -128,7 +128,7 @@ def _rejected_tokens(errors: list) -> list[str]:
     return tokens
 
 
-def _correction_instruction(tokens: list[str]) -> str:
+def _correction_instruction(tokens: list[str], errors: list | None = None) -> str:
     """Short, key-free instruction appended to the prompt for one retry."""
     lines = [
         "",
@@ -136,6 +136,14 @@ def _correction_instruction(tokens: list[str]) -> str:
     ]
     if tokens:
         lines.append("Rejected numeric values: " + ", ".join(tokens) + ".")
+    if errors:
+        # Echo the actual failures so the model can also fix non-price problems
+        # (e.g. a banned phrase), not just ungrounded prices.
+        lines.append(
+            "Fix these validation problems: "
+            + "; ".join(str(error) for error in errors[:3])
+            + "."
+        )
     lines.append(
         "Every price you emit MUST be copied exactly from ALLOWED_PRICE_LEVELS; "
         "never invent, recompute or round a price. No other numeric price-like "
@@ -233,7 +241,7 @@ def _predict(
                 pid,
                 len(tokens),
             )
-            retry_prompt = prompt + _correction_instruction(tokens)
+            retry_prompt = prompt + _correction_instruction(tokens, errors)
             try:
                 retry_reply = llm.call_llm(cfg, retry_prompt, api_key=key)
             except (LLMProviderError, LLMUnavailable) as exc:
