@@ -273,8 +273,18 @@ Item {
     clearEnvironment: true
     environment: root.childEnv
     property string pending: ""
+    property string pendingStdin: ""
     property string out: ""
     property bool stderrSet: false
+    // A key (or any secret) is written to the helper's stdin on start; it is
+    // never part of `command`, which other local accounts can read as argv.
+    onStarted: {
+      if (mutateProc.stdinEnabled) {
+        write(mutateProc.pendingStdin)
+        mutateProc.pendingStdin = ""
+        mutateProc.stdinEnabled = false
+      }
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: mutateProc.out = String(text || "")
@@ -307,6 +317,7 @@ Item {
         else if (!mutateProc.stderrSet) root.lastError = "the helper exited with " + code
       }
       mutateProc.pending = ""
+      mutateProc.pendingStdin = ""
       mutateProc.stderrSet = false
       Qt.callLater(root.pumpMutations)
     }
@@ -316,8 +327,12 @@ Item {
   // still running used to be dropped without a word.
   property var mutateQueue: []
 
-  function run(argv, doneText) {
-    root.mutateQueue.push({ argv: argv, done: doneText || "" })
+  function run(argv, doneText, stdinText) {
+    root.mutateQueue.push({
+      argv: argv,
+      done: doneText || "",
+      stdin: stdinText === undefined || stdinText === null ? null : String(stdinText)
+    })
     root.pumpMutations()
   }
 
@@ -325,6 +340,8 @@ Item {
     if (mutateProc.running || root.mutateQueue.length === 0) return
     var job = root.mutateQueue.shift()
     mutateProc.pending = job.done
+    mutateProc.pendingStdin = job.stdin === null ? "" : job.stdin
+    mutateProc.stdinEnabled = job.stdin !== null
     mutateProc.command = [root.helperPath].concat(job.argv).concat(["-addr", root.addr])
     mutateProc.running = true
   }
@@ -352,6 +369,8 @@ Item {
       }
       if (mutateProc.running) {
         mutateProc.running = false
+        mutateProc.stdinEnabled = false
+        mutateProc.pendingStdin = ""
         root.mutateQueue = []
         root.lastError = "the helper did not answer"
       }

@@ -17,22 +17,29 @@ command:
     playbook set-config '<json>'
     playbook export [dest_dir]
     playbook providers
-    playbook set-key <provider> <key>
+    playbook set-key <provider>          # key is read from stdin, never argv
     playbook clear-key <provider>
 
-Loopback calls never consult proxy environment variables.
+Every request carries the private bearer token published by the daemon in
+`$XDG_DATA_HOME/crypto-playbook/daemon.token`. Loopback calls never consult
+proxy environment variables.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
+from engine import auth
+
 DEFAULT_ADDR = "127.0.0.1:8099"
 TIMEOUT_S = 60
+#: A provider key is one line; guard against unbounded stdin on a stuck caller.
+MAX_KEY_CHARS = 8192
 
 #: Loopback-only opener: the daemon must never be reached via http_proxy.
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -53,7 +60,9 @@ def _path(base: str, params: dict | None = None) -> str:
     return base + "?" + urllib.parse.urlencode(params)
 
 
-def _request(addr: str, method: str, path: str, payload=None) -> tuple[int, bytes]:
+def _request(
+    addr: str, method: str, path: str, payload=None, token: str = ""
+) -> tuple[int, bytes]:
     """One HTTP call; returns ``(status, raw body)``.
 
     HTTP error responses are returned like any other answer (they carry a
@@ -61,7 +70,7 @@ def _request(addr: str, method: str, path: str, payload=None) -> tuple[int, byte
     """
     url = f"http://{addr}{path}"
     data = None
-    headers = {}
+    headers = {"Authorization": f"Bearer {token}"}
     if method == "POST":
         data = _compact(payload if payload is not None else {}).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -104,9 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", parents=[addr_parent])
     sub.add_parser("coins", parents=[addr_parent])
     sub.add_parser("providers", parents=[addr_parent])
-    set_key = sub.add_parser("set-key", parents=[addr_parent])
+    set_key = sub.add_parser(
+        "set-key",
+        parents=[addr_parent],
+        help="store a provider key read from stdin (never from argv)",
+    )
     set_key.add_argument("provider")
-    set_key.add_argument("key")
     clear_key_cmd = sub.add_parser("clear-key", parents=[addr_parent])
     clear_key_cmd.add_argument("provider")
     regenerate = sub.add_parser("regenerate", parents=[addr_parent])
@@ -122,6 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    token = auth.read_token()
+    if not token:
+        print(_compact({"error": "daemon token is missing; restart the daemon"}))
+        return 1
     method, path, payload = "GET", "/", None
 
     if args.command == "latest":
@@ -137,12 +153,21 @@ def main(argv=None) -> int:
     elif args.command == "providers":
         path = "/api/providers"
     elif args.command == "set-key":
-        # The key travels in the request body only; the daemon's {"ok": true}
-        # answer is printed as-is, so the key never appears in CLI output.
+        # The key arrives on stdin, never in argv (which other accounts can
+        # read) and never in CLI output: only the daemon's {"ok": true} answer
+        # is printed. It travels to the daemon in the request body.
+        raw_key = sys.stdin.read(MAX_KEY_CHARS + 1)
+        if len(raw_key) > MAX_KEY_CHARS:
+            print(_compact({"error": "key is too long"}))
+            return 1
+        key = raw_key.strip()
+        if not key:
+            print(_compact({"error": "paste a key on stdin"}))
+            return 1
         method, path, payload = (
             "POST",
             "/api/providers/key",
-            {"provider": args.provider, "key": args.key},
+            {"provider": args.provider, "key": key},
         )
     elif args.command == "clear-key":
         method, path, payload = (
@@ -170,7 +195,7 @@ def main(argv=None) -> int:
         method, path, payload = "POST", "/api/delete-reports", {}
 
     try:
-        status, raw = _request(args.addr, method, path, payload)
+        status, raw = _request(args.addr, method, path, payload, token)
     except DaemonUnreachable as error:
         print(_compact({"error": str(error)}))
         return 1

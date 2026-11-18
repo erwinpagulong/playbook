@@ -40,10 +40,11 @@ Item {
     var key = field.text.trim()
     var id = String(row.id)
     if (key === "") { view.app.lastError = "paste a key first"; return }
-    // Don't leave the key sitting in the field: run() copies the argv into
-    // the queue synchronously, so clearing here is safe.
+    // The key goes to the helper's stdin, never into its argv: process
+    // arguments are readable by other accounts on a shared machine. run()
+    // copies it into the queue synchronously, so clearing the field is safe.
     field.text = ""
-    view.app.run(["set-key", id, key], "key saved for " + String(row.name))
+    view.app.run(["set-key", id], "key saved for " + String(row.name), key)
   }
 
   function clearKey(row) {

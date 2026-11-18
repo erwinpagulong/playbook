@@ -31,6 +31,24 @@ def test_api_keys_view_uses_key_commands():
     assert 'set-key' in text and 'clear-key' in text and 'key_hint' in text
 
 
+def test_api_keys_view_never_puts_a_key_in_helper_argv():
+    text = (ROOT / "views/ApiKeys.qml").read_text()
+    save = text.split("function saveKey", 1)[1].split("function clearKey", 1)[0]
+    # The helper argv carries only the provider id; the key is the third
+    # argument to run(), which writes it to the helper's stdin instead.
+    assert 'run(["set-key", id]' in save
+    assert ", key)" in save
+
+
+def test_app_mutate_process_passes_stdin_without_argv():
+    text = (ROOT / "App.qml").read_text()
+    pump = text.split("function pumpMutations", 1)[1].split("function showToast", 1)[0]
+    assert "pendingStdin" in pump
+    assert "stdinEnabled" in pump
+    started = text.split("id: mutateProc", 1)[1].split("onExited:", 1)[0]
+    assert "write(mutateProc.pendingStdin)" in started
+
+
 def test_model_view_has_active_and_fallback():
     text = (ROOT / "views/Model.qml").read_text()
     assert 'fallback_provider' in text and 'provider' in text
