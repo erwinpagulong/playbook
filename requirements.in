@@ -1,0 +1,7 @@
+# Direct runtime dependencies. Regenerate requirements.txt with:
+#   pip-compile --generate-hashes --strip-extras --no-emit-index-url \
+#     --output-file=requirements.txt requirements.in
+pandas==2.3.3
+numpy==2.3.3
+requests==2.32.5
+yfinance==0.2.66

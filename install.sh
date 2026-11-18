@@ -4,9 +4,10 @@
 # Copies the plugin into ~/.config/omarchy/plugins/windong.cryptoplaybook/
 # (or sets it up in place when run from an installed copy), generates the
 # bin/playbookd and bin/playbook wrappers, and creates a .venv there with
-# the Python dependencies installed. Safe to re-run: managed files are
-# refreshed when installing from a separate checkout, and the .venv is
-# reused when it already works.
+# the Python dependencies installed. Safe to re-run: when installing from a
+# separate checkout the replacement is staged completely before the old
+# files are swapped out, so a failed copy leaves the previous install intact.
+# The .venv is reused when it already works.
 
 set -euo pipefail
 
@@ -39,30 +40,69 @@ if same_dir "$REPO_ROOT" "$PLUGIN_DIR"; then
         [ -d "$PLUGIN_DIR/$required" ] || die "missing $required/ in $PLUGIN_DIR"
     done
 else
-    # Remove only the paths this script manages, so re-runs pick up deletions
-    # from the repo without touching anything else (e.g. a pre-existing .venv).
-    rm -rf \
-        "$PLUGIN_DIR/views" \
-        "$PLUGIN_DIR/components" \
-        "$PLUGIN_DIR/engine" \
-        "$PLUGIN_DIR/samples" \
-        "$PLUGIN_DIR/bin"
-    rm -f \
-        "$PLUGIN_DIR/manifest.json" \
-        "$PLUGIN_DIR/BarWidget.qml" \
-        "$PLUGIN_DIR/App.qml" \
-        "$PLUGIN_DIR/Service.qml" \
-        "$PLUGIN_DIR/requirements.txt"
-
+    # Separate checkout: stage the full replacement before touching the
+    # installed copy. Deleting first would lose the previous install (and any
+    # local edits) if a later copy failed, so copies go to a staging directory
+    # and the old paths are only swapped out once every copy has succeeded.
     log "Copying plugin files"
     mkdir -p "$PLUGIN_DIR"
-    cp -a "$REPO_ROOT/manifest.json" "$PLUGIN_DIR/manifest.json"
-    cp -a "$REPO_ROOT/BarWidget.qml" "$REPO_ROOT/App.qml" "$REPO_ROOT/Service.qml" "$PLUGIN_DIR/"
-    cp -a "$REPO_ROOT/views"        "$PLUGIN_DIR/views"
-    cp -a "$REPO_ROOT/components"   "$PLUGIN_DIR/components"
-    cp -a "$REPO_ROOT/engine"       "$PLUGIN_DIR/engine"
-    cp -a "$REPO_ROOT/samples"      "$PLUGIN_DIR/samples"
-    cp -a "$REPO_ROOT/requirements.txt" "$PLUGIN_DIR/requirements.txt"
+    parent=$(dirname -- "$PLUGIN_DIR")
+
+    managed=(
+        manifest.json BarWidget.qml App.qml Service.qml requirements.txt
+        views components engine samples bin
+    )
+    stage=$(mktemp -d "$parent/.cryptoplaybook-stage.XXXXXX") || die "cannot create staging directory"
+    backup=$(mktemp -d "$parent/.cryptoplaybook-backup.XXXXXX") || {
+        rm -rf -- "$stage"
+        die "cannot create backup directory"
+    }
+
+    # If anything fails after staging, restore the previous installation.
+    rollback=1
+    swapped=0
+    moved=()
+    cleanup() {
+        if [ "$rollback" -eq 1 ]; then
+            # Only paths moved into place (swapped) can be partial replacements.
+            if [ "$swapped" -eq 1 ]; then
+                for name in "${managed[@]}"; do
+                    rm -rf -- "$PLUGIN_DIR/$name"
+                done
+            fi
+            if [ ${#moved[@]} -gt 0 ]; then
+                for name in "${moved[@]}"; do
+                    mv -- "$backup/$name" "$PLUGIN_DIR/$name"
+                done
+            fi
+        fi
+        rm -rf -- "$stage" "$backup"
+    }
+    trap cleanup EXIT
+
+    cp -a "$REPO_ROOT/manifest.json" "$REPO_ROOT/BarWidget.qml" \
+          "$REPO_ROOT/App.qml" "$REPO_ROOT/Service.qml" \
+          "$REPO_ROOT/requirements.txt" "$stage/"
+    cp -a "$REPO_ROOT/views" "$REPO_ROOT/components" \
+          "$REPO_ROOT/engine" "$REPO_ROOT/samples" "$stage/"
+
+    # Keep the old paths in backup, then install the staged ones. bin/ is
+    # regenerated below, so only its previous copy is moved aside.
+    for name in "${managed[@]}"; do
+        if [ -e "$PLUGIN_DIR/$name" ]; then
+            mv -- "$PLUGIN_DIR/$name" "$backup/$name"
+            moved+=("$name")
+        fi
+    done
+    swapped=1
+    for name in manifest.json BarWidget.qml App.qml Service.qml requirements.txt \
+                views components engine samples; do
+        mv -- "$stage/$name" "$PLUGIN_DIR/$name"
+    done
+
+    rollback=0
+    rm -rf -- "$stage" "$backup"
+    trap - EXIT
 fi
 
 # Never ship interpreter caches into the plugin dir.
@@ -118,7 +158,11 @@ if [ -L "$PLUGIN_DIR/.venv/lib64" ]; then
     rm -f "$PLUGIN_DIR/.venv/lib64"
 fi
 log "Installing Python dependencies (this can take a minute on first run)"
-"$PLUGIN_DIR/.venv/bin/pip" install --disable-pip-version-check -r "$PLUGIN_DIR/requirements.txt"
+# Exact versions and sha256 hashes are recorded in requirements.txt; enforce
+# both so setup is deterministic and reviewable. Test-only packages are kept
+# in requirements-dev.txt and never installed here.
+"$PLUGIN_DIR/.venv/bin/pip" install --disable-pip-version-check --require-hashes \
+    -r "$PLUGIN_DIR/requirements.txt"
 
 cat <<EOF
 
