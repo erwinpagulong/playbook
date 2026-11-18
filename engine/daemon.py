@@ -323,7 +323,12 @@ class PlaybookHandler(BaseHTTPRequestHandler):
     def _status_payload(self) -> dict:
         llm_config = self.server.config.get("llm")
         llm_config = llm_config if isinstance(llm_config, dict) else {}
-        key_env = llm_config.get("api_key_env")
+        active = llm_config.get("provider")
+        key_env = (
+            provider_llm_config(str(active), self.server.config)["api_key_env"]
+            if is_valid_provider(active)
+            else ""
+        )
         with self.server.state_lock:
             generating = sorted(self.server.generating)
         return {
@@ -547,13 +552,16 @@ def build_server(
 
     The server is created and bound (always on 127.0.0.1) but not served:
     callers run ``serve_forever`` themselves. Tests pass ``port=0`` to get
-    an ephemeral port; ``main`` uses ``DEFAULT_PORT``. A fresh bearer token
-    is published for the CLI before the socket starts accepting requests.
+    an ephemeral port; ``main`` uses ``DEFAULT_PORT``. The socket is bound
+    before a fresh bearer token is published: if another local process owns
+    the port, no token exists for the CLI to hand it.
     """
-    token = auth.issue_token()
-    return PlaybookServer(
-        (DEFAULT_HOST, port), PlaybookHandler, config, data_dir, token
+    auth.clear_token()
+    server = PlaybookServer(
+        (DEFAULT_HOST, port), PlaybookHandler, config, data_dir, ""
     )
+    server.auth_token = auth.issue_token()
+    return server
 
 
 def main(argv=None) -> int:
@@ -590,6 +598,7 @@ def main(argv=None) -> int:
     finally:
         server.stop_event.set()
         server.server_close()
+        auth.clear_token()
     return 0
 
 

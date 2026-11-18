@@ -802,3 +802,21 @@ def test_cli_set_key_reads_key_from_stdin(client_addr, BIN):
 def test_cli_set_key_refuses_key_in_argv(BIN, client_addr):
     result = run_cli(BIN, "set-key", "openrouter", "sk-in-argv-1234", addr=client_addr)
     assert result.returncode != 0  # a positional key would be world-readable
+
+
+def test_token_is_not_published_when_the_daemon_cannot_bind(tmp_path):
+    """A squatter on the port must not receive the CLI's token and key."""
+    token_file = daemon_token_path()
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text("stale-token-from-an-old-run\n", encoding="utf-8")
+    squatter = socket.socket()
+    squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    squatter.bind(("127.0.0.1", 0))
+    squatter.listen(1)
+    try:
+        port = squatter.getsockname()[1]
+        with pytest.raises(OSError):
+            daemon.build_server(load_config(tmp_path / "none.json"), tmp_path / "data", port=port)
+    finally:
+        squatter.close()
+    assert not token_file.exists()

@@ -160,18 +160,23 @@ Item {
     font.family: view.ff
     font.pixelSize: Style.font.caption
     font.letterSpacing: 1
+    // Provider text must never be parsed as markup: AutoText can load remote
+    // images from an <img> tag while the report is merely displayed.
+    textFormat: Text.PlainText
   }
   component Body: Text {
     color: view.fg
     font.family: view.ff
     font.pixelSize: Style.font.body
     wrapMode: Text.WordWrap
+    textFormat: Text.PlainText
   }
   component Note: Text {
     color: view.dim
     font.family: view.ff
     font.pixelSize: Style.font.caption
     wrapMode: Text.WordWrap
+    textFormat: Text.PlainText
   }
 
   Flickable {

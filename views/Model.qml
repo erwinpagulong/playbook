@@ -56,6 +56,9 @@ Item {
     if (row) {
       if (String(row.base_url || "") !== "") patch.base_url = String(row.base_url)
       if (String(row.model || "") !== "") patch.model = String(row.model)
+      // Never leave the previous provider's environment variable in the
+      // config: a stale name could route its key to this provider's endpoint.
+      if (String(row.api_key_env || "") !== "") patch.api_key_env = String(row.api_key_env)
     }
     // The fallback must differ from the active provider; activating the
     // provider that is currently the fallback clears the fallback rather

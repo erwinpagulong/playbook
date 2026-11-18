@@ -24,3 +24,22 @@ def test_validate_rejects_bad_coin_and_url():
     errors = validate_config(c)
     assert any("coin" in e for e in errors)
     assert any("base_url" in e for e in errors)
+
+
+def test_validate_rejects_plaintext_key_endpoint_off_loopback():
+    c = load_config(None)
+    c["llm"]["base_url"] = "http://api.example.com/v1"
+    errors = validate_config(c)
+    assert any("https" in error.lower() for error in errors)
+
+
+def test_validate_allows_loopback_http_and_remote_https():
+    for url in (
+        "http://127.0.0.1:11434/v1",
+        "http://localhost:11434/v1",
+        "http://[::1]:11434/v1",
+        "https://api.example.com/v1",
+    ):
+        c = load_config(None)
+        c["llm"]["base_url"] = url
+        assert validate_config(c) == [], url

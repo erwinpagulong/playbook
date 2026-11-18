@@ -53,3 +53,11 @@ def read_token(path: Path | None = None) -> str:
         return token_path(path).read_text(encoding="ascii").strip()
     except (OSError, UnicodeError):
         return ""
+
+
+def clear_token(path: Path | None = None) -> None:
+    """Remove a token left behind by a previous daemon (best effort)."""
+    try:
+        token_path(path).unlink()
+    except FileNotFoundError:
+        pass

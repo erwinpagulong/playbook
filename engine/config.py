@@ -14,6 +14,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 COIN_PATTERN = re.compile(r"^[A-Z0-9]+/[A-Z0-9]+$")
 
@@ -113,6 +114,14 @@ def validate_config(config: dict) -> list[str]:
         ("http://", "https://")
     ):
         errors.append(f"base_url must be an http(s) URL, got {base_url!r}")
+    elif base_url.startswith("http://"):
+        # The provider key would cross the network in cleartext. Local test
+        # endpoints are fine; remote ones must use TLS.
+        host = (urlsplit(base_url).hostname or "").lower()
+        if host not in {"localhost", "127.0.0.1", "::1"}:
+            errors.append(
+                "base_url must use https for a remote endpoint; http is only allowed on loopback"
+            )
 
     model = llm.get("model")
     if not isinstance(model, str) or not model.strip():

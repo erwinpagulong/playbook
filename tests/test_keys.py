@@ -90,5 +90,22 @@ def test_resolved_key_order_preset_env_beats_global(monkeypatch, tmp_path):
     clear_key("deepseek", p)
     monkeypatch.delenv("DEEPSEEK_API_KEY")
     assert resolved_key("deepseek", config, deepseek_cfg, p) == ""
-    # The active provider still resolves through the global config var.
+    # The active provider still resolves through its own preset env var.
     assert resolved_key("openai", config, config["llm"], p) == "sk-global-different"
+
+
+def test_resolved_key_never_uses_another_providers_env(monkeypatch, tmp_path):
+    """A stale global env name must not route OpenAI's key to Groq."""
+    from engine.providers import provider_llm_config
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-only")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    config = {
+        "llm": {
+            "provider": "groq",
+            "api_key_env": "OPENAI_API_KEY",  # left over from a previous switch
+        }
+    }
+    effective = provider_llm_config("groq", config)
+    assert effective["api_key_env"] == "GROQ_API_KEY"
+    assert resolved_key("groq", config, effective, tmp_path / "keys.json") == ""

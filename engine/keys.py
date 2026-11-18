@@ -135,31 +135,18 @@ def resolved_key(
     """Return the effective key for ``provider`` in priority order.
 
     1. the key stored in ``keys.json`` for this provider;
-    2. the env var named by the *effective* LLM config
-       (``llm_config["api_key_env"]``) — the config override for the active
-       provider, the preset's own variable for any other provider;
-    3. the global legacy ``config["llm"]["api_key_env"]`` env var — a final
-       fallback, applied only for the active provider (the provider the
-       config actually describes), so a single global key can never mark
-       unrelated providers as configured.
+    2. the provider's own env var, named by ``llm_config["api_key_env"]``.
 
-    No key value is logged or echoed. ``provider_list`` and the generation
-    path both call this helper, so what the UI reports and what a call uses
-    agree. ``llm_config`` is the already-resolved config from
-    ``provider_llm_config``; passing it in avoids an import cycle.
+    The config's global ``api_key_env`` is never consulted here: after a
+    provider switch it can still name the previous provider's variable, and
+    using it would send that key to the newly selected endpoint. Callers
+    build ``llm_config`` with ``provider_llm_config``, which always names
+    the preset's own variable. No key value is logged or echoed.
     """
     stored = stored_key(provider, path)
     if stored:
         return stored
-    llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
-    global_env = llm.get("api_key_env")
-    candidates = [(llm_config or {}).get("api_key_env")]
-    if provider == llm.get("provider"):
-        candidates.append(global_env)
-    for env_name in candidates:
-        if not isinstance(env_name, str) or not env_name:
-            continue
-        value = os.environ.get(env_name, "")
-        if value:
-            return value
-    return ""
+    env_name = (llm_config or {}).get("api_key_env")
+    if not isinstance(env_name, str) or not env_name:
+        return ""
+    return os.environ.get(env_name, "")

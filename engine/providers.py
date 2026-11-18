@@ -60,14 +60,13 @@ def is_valid_provider(provider: str | None) -> bool:
 def provider_llm_config(provider: str, config: dict) -> dict:
     """Return the effective LLM config for ``provider``.
 
-    Starts from the preset. ``api_key_env`` is overlaid from the config only
-    for the active provider (``config["llm"]["provider"]``); any other
-    provider keeps its preset's own env var so the global legacy variable
-    cannot stand in for a different provider's key. ``timeout_s`` is always
-    overlaid from the config. ``base_url`` and ``model`` are overlaid from
-    the config only for the active provider, so selecting a different one
-    uses that preset's endpoint/model while user edits to the active one are
-    honored. Returns a fresh dict.
+    Starts from the preset. ``api_key_env`` is always the provider's own
+    preset variable: the config's global name is never used to route a key,
+    because a stale value would send the previous provider's key to the new
+    endpoint. ``timeout_s`` is always overlaid from the config. ``base_url``
+    and ``model`` are overlaid from the config only for the active provider,
+    so selecting a different one uses that preset's endpoint/model while user
+    edits to the active one are honored. Returns a fresh dict.
     """
     if not is_valid_provider(provider):
         raise ValueError(f"unknown provider: {provider!r}")
@@ -75,7 +74,6 @@ def provider_llm_config(provider: str, config: dict) -> dict:
     merged = dict(PRESETS[provider])
     merged["provider"] = provider
     if provider == llm.get("provider"):
-        merged["api_key_env"] = llm.get("api_key_env", merged["api_key_env"])
         if "base_url" in llm:
             merged["base_url"] = llm["base_url"]
         if "model" in llm:
@@ -87,11 +85,13 @@ def provider_llm_config(provider: str, config: dict) -> dict:
 def provider_list(config: dict, keys_path: Path | None = None) -> list[dict]:
     """Return one row per preset describing selection and key state.
 
-    Rows carry ``id``, ``name``, ``base_url``, ``model``, ``active``,
-    ``fallback``, ``key_set`` and ``key_hint``. Key state comes from that
-    provider's stored key or its own env var — the global legacy variable
-    never marks an unrelated provider as keyed. Key material never appears —
-    only a boolean and the masked hint from ``engine.keys.mask``.
+    Rows carry ``id``, ``name``, ``base_url``, ``model``, ``api_key_env``,
+    ``active``, ``fallback``, ``key_set`` and ``key_hint``. The env name is
+    exposed so a provider switch can keep the config document consistent;
+    key resolution itself always uses the preset's own variable. Key state
+    comes from that provider's stored key or its own env var — the global
+    legacy variable never marks an unrelated provider as keyed. Key material
+    never appears — only a boolean and the masked hint from ``engine.keys``.
     """
     llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
     active = llm.get("provider")
@@ -106,6 +106,7 @@ def provider_list(config: dict, keys_path: Path | None = None) -> list[dict]:
                 "name": preset["name"],
                 "base_url": effective["base_url"],
                 "model": effective["model"],
+                "api_key_env": effective["api_key_env"],
                 "active": pid == active,
                 "fallback": fallback is not None and pid == fallback,
                 "key_set": bool(key),

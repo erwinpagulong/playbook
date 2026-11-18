@@ -98,6 +98,16 @@ def test_app_qml_loads_sidebar_by_file_url():
     assert "Sidebar {" not in text
 
 
+def test_provider_text_cannot_enable_qml_rich_text():
+    # AutoText interprets markup in provider-supplied strings; an <img> tag
+    # can make Qt fetch a remote URL while merely displaying a report.
+    for name in ("Dashboard.qml", "Predictions.qml"):
+        text = (ROOT / "views" / name).read_text()
+        for component in ("component Caption: Text {", "component Body: Text {", "component Note: Text {"):
+            block = text.split(component, 1)[1].split("\n  }", 1)[0]
+            assert "textFormat: Text.PlainText" in block, f"{name}: {component}"
+
+
 def test_data_privacy_key_wording_is_accurate():
     text = (ROOT / "views" / "DataPrivacy.qml").read_text()
     # The key IS transmitted in the Authorization header; what is true is that
