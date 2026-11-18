@@ -57,7 +57,7 @@ KEY_ENVS = (
 )
 
 
-def test_provider_llm_config_returns_fresh_dict_and_overlays():
+def test_provider_llm_config_returns_fresh_dict_with_provider_owned_env():
     cfg = load_config(None)
     cfg["llm"]["provider"] = "openai"
     cfg["llm"]["api_key_env"] = "MY_KEY_ENV"
@@ -66,10 +66,9 @@ def test_provider_llm_config_returns_fresh_dict_and_overlays():
     second = provider_llm_config("groq", cfg)
     assert first == second and first is not second
     assert first["base_url"] == PRESETS["groq"]["base_url"]
-    # A non-active provider keeps its own preset env var; the global override
-    # applies only to the active provider.
+    # The config's global env name is never used to route a key to a provider.
     assert first["api_key_env"] == PRESETS["groq"]["api_key_env"]
-    assert provider_llm_config("openai", cfg)["api_key_env"] == "MY_KEY_ENV"
+    assert provider_llm_config("openai", cfg)["api_key_env"] == PRESETS["openai"]["api_key_env"]
     assert first["timeout_s"] == 12
 
 
@@ -82,9 +81,10 @@ def test_provider_list_rows_cover_all_presets_without_keys(tmp_path, monkeypatch
     assert [r["id"] for r in rows] == list(PRESETS)
     for row in rows:
         assert set(row) == {
-            "id", "name", "base_url", "model",
+            "id", "name", "base_url", "model", "api_key_env",
             "active", "fallback", "key_set", "key_hint",
         }
+        assert row["api_key_env"] == PRESETS[row["id"]]["api_key_env"]
         assert row["key_set"] is False
         assert row["key_hint"] == ""
     assert next(r for r in rows if r["id"] == "openai")["active"] is True

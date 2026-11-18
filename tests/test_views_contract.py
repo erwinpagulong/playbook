@@ -54,6 +54,13 @@ def test_model_view_has_active_and_fallback():
     assert 'fallback_provider' in text and 'provider' in text
 
 
+def test_model_view_switches_key_env_with_provider():
+    text = (ROOT / "views/Model.qml").read_text()
+    select = text.split("function selectActive", 1)[1].split("function selectFallback", 1)[0]
+    assert "patch.api_key_env" in select
+    assert "row.api_key_env" in select
+
+
 def test_no_full_key_literal_in_settings():
     text = (ROOT / "views/Settings.qml").read_text()
     assert "THE API KEY" not in text

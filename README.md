@@ -42,8 +42,10 @@ omarchy plugin enable windong.cryptoplaybook
 ```
 
 This generates the `bin/` wrappers and private `.venv` that the service needs.
-Until then the bar glyph shows a tooltip with the same command. The installer is
-idempotent, so it is safe to re-run after updates.
+Until then the bar glyph shows a tooltip with the same command. Running the
+bundled installer in place is safe: it detects that source and destination are
+the same folder and keeps the files already there instead of deleting them.
+It is idempotent, so it is also safe to re-run after updates.
 
 ### Bar placement
 
@@ -72,11 +74,14 @@ or the QML shell — and the daemon reads them at generation time. The *Model*
 screen picks which provider writes the prediction narrative and which one is
 tried when the active provider fails.
 
-The environment variable named by `llm.api_key_env` (`OPENAI_API_KEY` by
-default) still works as a **legacy fallback**: if no key is stored in
-`keys.json` for a provider, the daemon reads that variable at generation time. Because
-the daemon is launched by Quickshell, such a variable must live in **Quickshell's
-own launch environment**: export it in the shell session that starts
+Each provider also has a **legacy environment fallback** with its own variable
+name: `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`,
+`GROQ_API_KEY`, or `CUSTOM_API_KEY`. It is used only when no key is stored for
+that provider. Keys are never routed by the global `llm.api_key_env` config
+field: a stale name could send the previous provider's key to a new endpoint,
+so resolution always uses the provider's own variable. Because the daemon is
+launched by Quickshell, such a variable must live in **Quickshell's own launch
+environment**: export it in the shell session that starts
 Omarchy/Quickshell (for example from your login shell profile) *before*
 starting the shell, then restart the shell so the daemon inherits it. Exporting
 it in a separate terminal after the shell is running will not reach the daemon,
@@ -97,9 +102,11 @@ at runtime.
 The QML shell only talks to the daemon on loopback (`127.0.0.1:8099`); it never
 makes a network request itself. Loopback is not access control on a shared
 machine, so the daemon generates a random token on each start and stores it in
-`$XDG_DATA_HOME/crypto-playbook/daemon.token` with mode `600`. Every CLI call
-sends that token in an `Authorization: Bearer` header; another local account
-cannot read the file and cannot call your daemon. The daemon fetches public market data on a
+`$XDG_DATA_HOME/crypto-playbook/daemon.token` with mode `600`. The socket is
+bound before the token is published, so a process squatting on the port never
+receives it; the file is removed when the daemon stops. Every CLI call sends
+that token in an `Authorization: Bearer` header; another local account cannot
+read the file and cannot call your daemon. The daemon fetches public market data on a
 schedule or when you regenerate a report:
 
 - Candles: the public Binance REST API, with Yahoo Finance (via `yfinance`) as
@@ -160,18 +167,21 @@ screen or in the config). Provider keys are stored per provider in
 config, the reports, the CLI output, or the UI — the daemon re-reads the file
 per request and only ever reports a boolean plus a masked hint.
 
-Notes on the LLM configuration: the only environment variable read by default is
-`OPENAI_API_KEY`, and only as a legacy fallback — the key value is placed in the
-`Authorization` header and is never logged, printed, stored in the config, or
-included in reports. The durable path is a stored key via the *API keys* screen
-or `playbook set-key`; a stored key wins over the environment. To use a different
-provider or model, edit `llm.provider` / `llm.base_url` / `llm.model` /
-`llm.api_key_env` / `llm.timeout_s` in `config.json` (or via `set-config`);
-`api_key_env` can name any environment variable you keep a fallback key in.
-There are no `LLM_*` environment overrides. When the active provider fails, the
-daemon retries the fallback (if configured) and records which provider answered
-via `prediction.provider` / `prediction.model` / `prediction.fallback_used` in
-the report.
+Notes on the LLM configuration: environment keys are read only from the
+provider's own variable, placed in the `Authorization` header, and never
+logged, printed, stored in the config, or included in reports. The durable path
+is a stored key via the *API keys* screen or `playbook set-key`; a stored key
+wins over the environment. To use a different provider or model, edit
+`llm.provider` / `llm.base_url` / `llm.model` / `llm.timeout_s` in `config.json`
+(or via `set-config`). The `llm.api_key_env` field is kept for compatibility
+and is updated to the provider's variable by the *Model* screen, but it no
+longer selects which key is sent. Remote `base_url` values must use `https` —
+a plaintext `http` endpoint would expose the key in transit; only loopback
+HTTP endpoints are accepted for local testing. There are no `LLM_*`
+environment overrides. When the active provider fails, the daemon retries the
+fallback (if configured) and records which provider answered via
+`prediction.provider` / `prediction.model` / `prediction.fallback_used` in the
+report.
 
 ### CLI cheat sheet
 

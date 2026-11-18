@@ -1,11 +1,12 @@
 #!/bin/bash
 # Crypto Playbook plugin installer.
 #
-# Copies the plugin into ~/.config/omarchy/plugins/windong.cryptoplaybook/,
-# generates the bin/playbookd and bin/playbook wrappers, and creates a
-# .venv there with the Python dependencies installed. Safe to re-run:
-# managed files are refreshed in place, and the .venv is reused when it
-# already works.
+# Copies the plugin into ~/.config/omarchy/plugins/windong.cryptoplaybook/
+# (or sets it up in place when run from an installed copy), generates the
+# bin/playbookd and bin/playbook wrappers, and creates a .venv there with
+# the Python dependencies installed. Safe to re-run: managed files are
+# refreshed when installing from a separate checkout, and the .venv is
+# reused when it already works.
 
 set -euo pipefail
 
@@ -21,30 +22,48 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required but not on PATH"
 
 log "Installing $PLUGIN_ID into $PLUGIN_DIR"
 
-# Remove only the paths this script manages, so re-runs pick up deletions
-# from the repo without touching anything else (e.g. a pre-existing .venv).
-mkdir -p "$PLUGIN_DIR"
-rm -rf \
-    "$PLUGIN_DIR/views" \
-    "$PLUGIN_DIR/components" \
-    "$PLUGIN_DIR/engine" \
-    "$PLUGIN_DIR/samples" \
-    "$PLUGIN_DIR/bin"
-rm -f \
-    "$PLUGIN_DIR/manifest.json" \
-    "$PLUGIN_DIR/BarWidget.qml" \
-    "$PLUGIN_DIR/App.qml" \
-    "$PLUGIN_DIR/Service.qml" \
-    "$PLUGIN_DIR/requirements.txt"
+# A marketplace install clones into the destination and runs this same script
+# from there. Source and destination are then identical: deleting "managed"
+# paths first would destroy the files we are about to copy (and any local
+# edits), then fail. In that case only generate the wrappers and the venv.
+same_dir() {
+    [ "$(readlink -f -- "$1")" = "$(readlink -f -- "$2")" ]
+}
 
-log "Copying plugin files"
-cp -a "$REPO_ROOT/manifest.json" "$PLUGIN_DIR/manifest.json"
-cp -a "$REPO_ROOT/BarWidget.qml" "$REPO_ROOT/App.qml" "$REPO_ROOT/Service.qml" "$PLUGIN_DIR/"
-cp -a "$REPO_ROOT/views"        "$PLUGIN_DIR/views"
-cp -a "$REPO_ROOT/components"   "$PLUGIN_DIR/components"
-cp -a "$REPO_ROOT/engine"       "$PLUGIN_DIR/engine"
-cp -a "$REPO_ROOT/samples"      "$PLUGIN_DIR/samples"
-cp -a "$REPO_ROOT/requirements.txt" "$PLUGIN_DIR/requirements.txt"
+if same_dir "$REPO_ROOT" "$PLUGIN_DIR"; then
+    log "Running in place; keeping the files already in $PLUGIN_DIR"
+    for required in manifest.json App.qml Service.qml BarWidget.qml requirements.txt; do
+        [ -f "$PLUGIN_DIR/$required" ] || die "missing $required in $PLUGIN_DIR"
+    done
+    for required in views components engine samples; do
+        [ -d "$PLUGIN_DIR/$required" ] || die "missing $required/ in $PLUGIN_DIR"
+    done
+else
+    # Remove only the paths this script manages, so re-runs pick up deletions
+    # from the repo without touching anything else (e.g. a pre-existing .venv).
+    rm -rf \
+        "$PLUGIN_DIR/views" \
+        "$PLUGIN_DIR/components" \
+        "$PLUGIN_DIR/engine" \
+        "$PLUGIN_DIR/samples" \
+        "$PLUGIN_DIR/bin"
+    rm -f \
+        "$PLUGIN_DIR/manifest.json" \
+        "$PLUGIN_DIR/BarWidget.qml" \
+        "$PLUGIN_DIR/App.qml" \
+        "$PLUGIN_DIR/Service.qml" \
+        "$PLUGIN_DIR/requirements.txt"
+
+    log "Copying plugin files"
+    mkdir -p "$PLUGIN_DIR"
+    cp -a "$REPO_ROOT/manifest.json" "$PLUGIN_DIR/manifest.json"
+    cp -a "$REPO_ROOT/BarWidget.qml" "$REPO_ROOT/App.qml" "$REPO_ROOT/Service.qml" "$PLUGIN_DIR/"
+    cp -a "$REPO_ROOT/views"        "$PLUGIN_DIR/views"
+    cp -a "$REPO_ROOT/components"   "$PLUGIN_DIR/components"
+    cp -a "$REPO_ROOT/engine"       "$PLUGIN_DIR/engine"
+    cp -a "$REPO_ROOT/samples"      "$PLUGIN_DIR/samples"
+    cp -a "$REPO_ROOT/requirements.txt" "$PLUGIN_DIR/requirements.txt"
+fi
 
 # Never ship interpreter caches into the plugin dir.
 find "$PLUGIN_DIR" -type d -name __pycache__ -prune -exec rm -rf {} +
