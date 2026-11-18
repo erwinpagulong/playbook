@@ -104,10 +104,14 @@ makes a network request itself. Loopback is not access control on a shared
 machine, so the daemon generates a random token on each start and stores it in
 `$XDG_DATA_HOME/crypto-playbook/daemon.token` with mode `600`. The socket is
 bound before the token is published, so a process squatting on the port never
-receives it; the file is removed when the daemon stops. Every CLI call sends
-that token in an `Authorization: Bearer` header; another local account cannot
-read the file and cannot call your daemon. The daemon fetches public market data on a
-schedule or when you regenerate a report:
+receives it; the file is removed when the daemon stops. Because the file can
+outlive a daemon that crashed, the CLI does not trust it on its own: before
+sending the token or a provider key, it asks the listener to prove it holds
+the token (a fresh nonce answered with an HMAC) on the same connection, and
+refuses to continue if the proof does not match. Only then does it send the
+token in an `Authorization: Bearer` header. Another local account cannot read
+the file, cannot answer the challenge, and cannot call your daemon. The daemon
+fetches public market data on a schedule or when you regenerate a report:
 
 - Candles: the public Binance REST API, with Yahoo Finance (via `yfinance`) as
   a fallback, then a local on-disk cache.

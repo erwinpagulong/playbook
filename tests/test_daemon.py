@@ -12,6 +12,8 @@ so daemon startup never triggers a live generation.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -820,3 +822,186 @@ def test_token_is_not_published_when_the_daemon_cannot_bind(tmp_path):
     finally:
         squatter.close()
     assert not token_file.exists()
+
+
+def test_hello_lets_a_caller_verify_the_daemon_without_sending_the_token(server):
+    """The pre-auth handshake must prove knowledge of this process's token.
+
+    A listener that does not hold the token cannot answer; only after the CLI
+    verifies the answer may it send the token or a provider key. The request
+    itself carries no credential, so a squatting listener learns nothing.
+    """
+    nonce = "0123456789abcdef"
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    request = urllib.request.Request(base + f"/api/hello?nonce={nonce}", method="GET")
+    with OPENER.open(request, timeout=10) as response:
+        assert response.status == 200
+        body = json.loads(response.read())
+    expected = hmac.new(
+        server.auth_token.encode("ascii"), nonce.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    assert body == {"proof": expected}
+    assert server.auth_token not in json.dumps(body)
+
+
+def test_hello_requires_a_nonce(server):
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        OPENER.open(base + "/api/hello", timeout=10)
+    assert excinfo.value.code == 400
+
+
+def _read_http_request(conn: socket.socket) -> bytes:
+    """Read one request (headers plus its declared body) from ``conn``."""
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = conn.recv(4096)
+        if not chunk:
+            return data
+        data += chunk
+    head, sep, body = data.partition(b"\r\n\r\n")
+    length = 0
+    for line in head.split(b"\r\n")[1:]:
+        name, _, value = line.partition(b":")
+        if name.strip().lower() == b"content-length":
+            length = int(value.strip() or 0)
+    while len(body) < length:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        body += chunk
+    return head + sep + body
+
+
+def test_cli_does_not_send_secrets_to_an_unverified_listener(BIN):
+    """After an abnormal daemon exit its token file stays behind.
+
+    A replacement listener on the port must not receive that stale token or a
+    provider key the user submits before the real daemon restarts. The CLI has
+    to verify the listener holds the live token before sending either.
+    """
+    stale_token = "stale-token-from-a-crashed-daemon"
+    token_file = daemon_token_path()
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(stale_token + "\n", encoding="utf-8")
+
+    received: list[bytes] = []
+    squatter = socket.socket()
+    squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    squatter.bind(("127.0.0.1", 0))
+    squatter.listen(1)
+
+    def serve() -> None:
+        try:
+            conn, _ = squatter.accept()
+        except OSError:
+            return
+        with conn:
+            received.append(_read_http_request(conn))
+            body = b'{"ok":true}'
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+                b"Connection: close\r\n\r\n" + body
+            )
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        port = squatter.getsockname()[1]
+        result = subprocess.run(
+            [
+                str(BIN / "playbook"),
+                "set-key",
+                "openrouter",
+                "-addr",
+                f"127.0.0.1:{port}",
+            ],
+            input="sk-must-not-leak-4242\n",
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        squatter.close()
+        thread.join(timeout=5)
+
+    assert result.returncode != 0, result.stdout
+    assert "error" in json.loads(result.stdout)
+    sent = b"".join(received)
+    assert b"sk-must-not-leak-4242" not in sent
+    assert stale_token.encode("ascii") not in sent
+
+
+def test_cli_does_not_send_the_key_on_a_reconnected_socket(BIN):
+    """The proof and the request body must share one connection.
+
+    A listener that answers the nonce correctly but closes the connection
+    must not receive the key on a fresh one: the verified peer and the
+    receiving peer have to be the same process for the proof to mean anything.
+    """
+    token = "token-whose-proof-the-listener-can-compute"
+    token_file = daemon_token_path()
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(token + "\n", encoding="utf-8")
+
+    received: list[bytes] = []
+    squatter = socket.socket()
+    squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    squatter.bind(("127.0.0.1", 0))
+    squatter.listen(1)
+    squatter.settimeout(1)
+
+    def serve() -> None:
+        try:
+            conn, _ = squatter.accept()
+        except OSError:
+            return
+        with conn:
+            request = _read_http_request(conn)
+            nonce = request.split(b"nonce=", 1)[1].split(b" ", 1)[0].decode("ascii")
+            proof = hmac.new(
+                token.encode("ascii"), nonce.encode("ascii"), hashlib.sha256
+            ).hexdigest()
+            body = json.dumps({"proof": proof}).encode("ascii")
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+                b"Connection: close\r\n\r\n" + body
+            )
+        try:
+            conn, _ = squatter.accept()
+        except OSError:
+            return  # the CLI refused to reconnect, as it must
+        with conn:
+            received.append(_read_http_request(conn))
+            body = b'{"ok":true}'
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+                b"Connection: close\r\n\r\n" + body
+            )
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        port = squatter.getsockname()[1]
+        result = subprocess.run(
+            [
+                str(BIN / "playbook"),
+                "set-key",
+                "openrouter",
+                "-addr",
+                f"127.0.0.1:{port}",
+            ],
+            input="sk-reconnected-leak-9999\n",
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        squatter.close()
+        thread.join(timeout=5)
+
+    assert result.returncode != 0, result.stdout
+    assert b"sk-reconnected-leak-9999" not in b"".join(received)

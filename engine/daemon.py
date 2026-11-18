@@ -2,9 +2,11 @@
 
 `build_server` binds a `ThreadingHTTPServer` on 127.0.0.1 and routes a
 small JSON API that the QML panel consumes through `engine.cli`. Every
-request must carry the private token published by `engine.auth`; loopback
-alone is not access control on a shared machine:
+request except the `/api/hello` identity challenge must carry the private
+token published by `engine.auth`; loopback alone is not access control on a
+shared machine:
 
+    GET  /api/hello?nonce=    pre-auth identity proof -> {"proof": ...}
     GET  /api/health          liveness probe -> {"status": "ok"}
     GET  /api/status          coins, interval, report count, run state
     GET  /api/coins           configured coins (bare JSON array)
@@ -66,6 +68,7 @@ def default_export_dir() -> Path:
 
 _GET_ROUTES = frozenset(
     {
+        "/api/hello",
         "/api/health",
         "/api/status",
         "/api/coins",
@@ -239,6 +242,10 @@ class PlaybookHandler(BaseHTTPRequestHandler):
     """Routes ``/api/*`` to the engine helpers; one thread per connection."""
 
     server_version = "playbookd"
+    # Keep the verified handshake and the request that follows it on one
+    # connection: the CLI proves this listener holds the token before sending
+    # the token or a provider key (see ``engine.cli._verify_daemon``).
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args) -> None:
         log.debug("%s %s", self.address_string(), fmt % args)
@@ -280,12 +287,27 @@ class PlaybookHandler(BaseHTTPRequestHandler):
             return None
         return parsed if isinstance(parsed, dict) else None
 
+    def _send_hello(self, nonce: str | None) -> None:
+        """Prove possession of the live token for a caller-chosen nonce."""
+        if not nonce or len(nonce) > 128 or not nonce.isascii():
+            self._send(400, {"error": "nonce is required (ASCII, max 128 chars)"})
+            return
+        self._send(200, {"proof": auth.proof(self.server.auth_token, nonce)})
+
     # -- GET ---------------------------------------------------------------
 
     def do_GET(self) -> None:
         parts = urlsplit(self.path)
         route = parts.path
         query = parse_qs(parts.query)
+        if route == "/api/hello":
+            # Pre-auth handshake: answer a caller-chosen nonce with an HMAC
+            # under the live token. The request carries no credential, and
+            # the proof only proves possession to the caller that chose the
+            # nonce, so an arbitrary local peer learns nothing it could use
+            # to impersonate the daemon or the CLI.
+            self._send_hello(_first(query, "nonce"))
+            return
         if self._reject_unauthorized():
             return
         try:
