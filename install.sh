@@ -63,6 +63,7 @@ else
     # If anything fails after staging, restore the previous installation.
     rollback=1
     swapped=0
+    venv_moved=0
     moved=()
     cleanup() {
         if [ "$rollback" -eq 1 ]; then
@@ -71,6 +72,10 @@ else
                 for name in "${managed[@]}"; do
                     rm -rf -- "$PLUGIN_DIR/$name"
                 done
+                # Discard a half-built venv; the old one is restored below.
+                if [ "$venv_moved" -eq 1 ]; then
+                    rm -rf -- "$PLUGIN_DIR/.venv"
+                fi
             fi
             if [ ${#moved[@]} -gt 0 ]; then
                 for name in "${moved[@]}"; do
@@ -153,7 +158,15 @@ venv_ok() {
 
 if ! venv_ok; then
     log "Creating virtualenv at $PLUGIN_DIR/.venv"
-    rm -rf "$PLUGIN_DIR/.venv"
+    if [ -n "${backup:-}" ] && [ -e "$PLUGIN_DIR/.venv" ]; then
+        # Separate checkout: keep the old venv in the backup so a failed
+        # rebuild or pip install can restore a working runtime.
+        mv -- "$PLUGIN_DIR/.venv" "$backup/.venv"
+        moved+=(".venv")
+        venv_moved=1
+    else
+        rm -rf "$PLUGIN_DIR/.venv"
+    fi
     python3 -m venv --copies "$PLUGIN_DIR/.venv"
 fi
 if [ -L "$PLUGIN_DIR/.venv/lib64" ]; then
@@ -165,6 +178,10 @@ log "Installing Python dependencies (this can take a minute on first run)"
 # in requirements-dev.txt and never installed here.
 "$PLUGIN_DIR/.venv/bin/pip" install --disable-pip-version-check --require-hashes \
     -r "$PLUGIN_DIR/requirements.txt"
+
+# Setup (wrappers, venv, dependencies) succeeded; display output below cannot
+# leave a partial install, so stop treating later failures as rollback-worthy.
+rollback=0
 
 cat <<EOF
 
@@ -194,6 +211,3 @@ Reports and config live outside the plugin dir (XDG):
   config: \${XDG_CONFIG_HOME:-~/.config}/crypto-playbook/config.json
   data:   \${XDG_DATA_HOME:-~/.local/share}/crypto-playbook/
 EOF
-
-# Setup completed: the EXIT trap now only removes the staging/backup dirs.
-rollback=0

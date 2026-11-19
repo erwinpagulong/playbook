@@ -260,12 +260,18 @@ def test_separate_checkout_failed_setup_restores_previous_installation(tmp_path)
     (plugin / "App.qml").write_text("local app edit\n", encoding="utf-8")
     (plugin / "bin").mkdir()
     (plugin / "bin" / "playbook").write_text("old wrapper\n", encoding="utf-8")
+    # An invalid venv forces a rebuild, so this marker must survive a failure.
+    (plugin / ".venv").mkdir()
+    (plugin / ".venv" / "marker").write_text("old venv marker\n", encoding="utf-8")
+    (checkout / "views" / "Shipped.qml").write_text("shipped\n", encoding="utf-8")
 
     result = run_installer(checkout / "install.sh", plugin, failing_pip_dir(tmp_path), checkout)
     assert result.returncode != 0, result.stdout + result.stderr
     assert "simulated pip failure" in result.stderr
     assert (plugin / "App.qml").read_text(encoding="utf-8") == "local app edit\n"
     assert (plugin / "bin" / "playbook").read_text(encoding="utf-8") == "old wrapper\n"
+    assert (plugin / ".venv" / "marker").read_text(encoding="utf-8") == "old venv marker\n"
+    assert not (plugin / "views" / "Shipped.qml").exists()
     assert_no_temp_leftovers(tmp_path)
 
 
