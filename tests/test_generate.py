@@ -17,7 +17,7 @@ from engine import data, llm, providers
 from engine.config import load_config
 from engine.data import DataUnavailable
 from engine.generate import generate_report
-from engine.llm import LLMUnavailable
+from engine.llm import LLMUnavailable, call_llm as real_call_llm
 from engine.models import Candle
 from engine.report import list_reports
 
@@ -259,6 +259,31 @@ def test_active_provider_selects_endpoint(monkeypatch, tmp_path):
     cfg["llm"]["model"] = providers.PRESETS["deepseek"]["model"]
     generate_report("BTC/USDT", cfg, tmp_path)
     assert seen == [providers.PRESETS["deepseek"]["base_url"]]
+
+
+def test_custom_provider_without_destination_never_sends_the_custom_key(monkeypatch, tmp_path):
+    """A Custom selection without its own endpoint must not reuse another URL.
+
+    The previous provider's URL is still in ``llm.base_url`` when the UI
+    switches to Custom before a destination is entered; the Custom key must
+    never travel to that endpoint.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("CUSTOM_API_KEY", "sk-custom-secret")
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
+    posted = []
+    monkeypatch.setattr(llm.requests, "post", lambda *a, **k: posted.append(1))
+    # The autouse fixture stubs call_llm; use the real request path here so the
+    # assertion covers the actual HTTP seam.
+    monkeypatch.setattr(llm, "call_llm", real_call_llm)
+    cfg = load_config(None)
+    cfg["llm"]["provider"] = "custom"
+
+    result = generate_report("BTC/USDT", cfg, tmp_path)
+
+    assert posted == []
+    assert result["report"]["prediction"]["available"] is False
+    assert "sk-custom-secret" not in json.dumps(result["report"])
 
 
 def test_bad_request_does_not_fall_back(monkeypatch, tmp_path):

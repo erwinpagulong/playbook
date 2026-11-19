@@ -61,6 +61,30 @@ def test_model_view_switches_key_env_with_provider():
     assert "row.api_key_env" in select
 
 
+def test_model_view_requires_custom_destination_before_activation():
+    """Custom must be saved together with its own URL/model, never a stale URL."""
+    text = (ROOT / "views/Model.qml").read_text()
+    select = text.split("function selectActive", 1)[1].split("function selectFallback", 1)[0]
+    assert "custom_base_url" in select
+    assert "custom_model" in select
+    assert "patch.base_url" in select
+    assert "patch.model" in select
+    assert 'id === "custom"' in select
+    fallback = text.split("function selectFallback", 1)[1].split("function applyModel", 1)[0]
+    assert "custom_base_url" in fallback
+    assert "custom_model" in fallback
+
+
+def test_api_keys_custom_endpoint_is_stored_separately_from_the_active_preset():
+    """Editing the Custom endpoint must not rewrite another provider's config."""
+    text = (ROOT / "views/ApiKeys.qml").read_text()
+    apply = text.split("function applyCustom", 1)[1].split("function handleKey", 1)[0]
+    assert "custom_base_url" in apply
+    assert "custom_model" in apply
+    # The generic fields are only kept in sync while Custom itself is active.
+    assert 'currentProviderId === "custom"' in apply
+
+
 def test_no_full_key_literal_in_settings():
     text = (ROOT / "views/Settings.qml").read_text()
     assert "THE API KEY" not in text

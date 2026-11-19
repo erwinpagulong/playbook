@@ -19,7 +19,9 @@ Item {
   readonly property var llm: app && app.cfg && app.cfg.llm ? app.cfg.llm : ({})
   readonly property string currentProviderId: llm.provider ? String(llm.provider) : ""
   readonly property string currentFallbackId: llm.fallback_provider ? String(llm.fallback_provider) : "none"
-  readonly property string currentModel: llm.model ? String(llm.model) : ""
+  readonly property string currentModel: currentProviderId === "custom"
+    ? (llm.custom_model ? String(llm.custom_model) : "")
+    : (llm.model ? String(llm.model) : "")
 
   readonly property var providerOptions: {
     var out = []
@@ -51,11 +53,26 @@ Item {
   function selectActive(id) {
     var row = view.rowFor(id)
     var patch = { provider: id }
-    // A preset with empty values (Custom, not yet configured) must not
-    // blank out the config — base_url has to stay an http(s) URL.
     if (row) {
-      if (String(row.base_url || "") !== "") patch.base_url = String(row.base_url)
-      if (String(row.model || "") !== "") patch.model = String(row.model)
+      if (id === "custom") {
+        // Custom has no preset endpoint. Require its own saved destination
+        // and save provider + destination in one action, so it never inherits
+        // the previous provider's URL (which would send the Custom key there).
+        var customBase = view.llm.custom_base_url ? String(view.llm.custom_base_url) : ""
+        var customModel = view.llm.custom_model ? String(view.llm.custom_model) : ""
+        if (customBase === "" || customModel === "") {
+          view.app.lastError = "set the Custom base URL and model first (API keys → Custom endpoint)"
+          if (activeBox) activeBox.value = view.currentProviderId
+          return
+        }
+        patch.base_url = customBase
+        patch.model = customModel
+      } else {
+        // A preset with empty values must not blank out the config —
+        // base_url has to stay an http(s) URL.
+        if (String(row.base_url || "") !== "") patch.base_url = String(row.base_url)
+        if (String(row.model || "") !== "") patch.model = String(row.model)
+      }
       // Never leave the previous provider's environment variable in the
       // config: a stale name could route its key to this provider's endpoint.
       if (String(row.api_key_env || "") !== "") patch.api_key_env = String(row.api_key_env)
@@ -74,6 +91,13 @@ Item {
       view.app.lastError = "the fallback must differ from the active provider"
       return
     }
+    if (fb === "custom"
+        && (String(view.llm.custom_base_url || "") === ""
+            || String(view.llm.custom_model || "") === "")) {
+      view.app.lastError = "set the Custom base URL and model first (API keys → Custom endpoint)"
+      if (fallbackBox) fallbackBox.value = view.currentFallbackId
+      return
+    }
     view.postConfig({ llm: { fallback_provider: fb } },
                     fb === null ? "fallback: none" : "fallback: " + fb)
   }
@@ -81,7 +105,11 @@ Item {
   function applyModel() {
     var model = modelField.text.trim()
     if (model === "") { view.app.lastError = "model must be a non-empty string"; return }
-    view.postConfig({ llm: { model: model } }, "model: " + model)
+    var patch = { model: model }
+    // Custom keeps its destination separate; keep those fields in sync while
+    // it is the active provider.
+    if (view.currentProviderId === "custom") patch.custom_model = model
+    view.postConfig({ llm: patch }, "model: " + model)
   }
 
   function handleKey(e) {
@@ -156,7 +184,7 @@ Item {
           onChanged: function (v) { view.selectActive(v) }
         }
         Binding { target: activeBox; property: "value"; value: view.currentProviderId }
-        Note { width: parent.width; text: "The provider that writes the prediction narrative. Selecting one fills its base URL and default model (an empty Custom preset keeps the current values); both stay editable as the active provider on the API keys screen." }
+        Note { width: parent.width; text: "The provider that writes the prediction narrative. Selecting one fills its base URL and default model. Custom has no preset endpoint: save its base URL and model on the API keys screen, then select Custom here (the provider and its destination are saved together, so the Custom key never goes to the previous provider's URL)." }
       }
 
       TitledCard {

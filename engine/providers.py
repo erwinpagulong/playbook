@@ -3,8 +3,9 @@
 Each preset carries ``name``, ``base_url``, ``model`` and ``api_key_env``.
 Base URLs are the documented public OpenAI-compatible endpoints; models are
 plausible documented defaults and are always editable in the config. The
-``custom`` preset ships empty ``base_url``/``model`` so the user must supply
-their own endpoint.
+``custom`` preset ships empty ``base_url``/``model``; the user's own endpoint
+is kept separately in ``custom_base_url``/``custom_model`` (see
+``provider_llm_config``).
 
 Keys themselves live in the private keys file (see ``engine.keys``) and are
 never exposed here: ``provider_list`` reports only a boolean and a masked
@@ -63,17 +64,27 @@ def provider_llm_config(provider: str, config: dict) -> dict:
     Starts from the preset. ``api_key_env`` is always the provider's own
     preset variable: the config's global name is never used to route a key,
     because a stale value would send the previous provider's key to the new
-    endpoint. ``timeout_s`` is always overlaid from the config. ``base_url``
-    and ``model`` are overlaid from the config only for the active provider,
-    so selecting a different one uses that preset's endpoint/model while user
-    edits to the active one are honored. Returns a fresh dict.
+    endpoint. ``timeout_s`` is always overlaid from the config.
+
+    The Custom preset has no public endpoint, so it uses only the destination
+    saved in ``custom_base_url``/``custom_model`` — never the generic
+    ``base_url``/``model``, which still hold the previous provider's values
+    until the UI saves Custom together with its own destination. Other
+    providers overlay the generic ``base_url``/``model`` only while they are
+    the active provider, so selecting a different one uses that preset's
+    endpoint/model. Returns a fresh dict.
     """
     if not is_valid_provider(provider):
         raise ValueError(f"unknown provider: {provider!r}")
     llm = config.get("llm") if isinstance(config.get("llm"), dict) else {}
     merged = dict(PRESETS[provider])
     merged["provider"] = provider
-    if provider == llm.get("provider"):
+    if provider == "custom":
+        custom_base_url = llm.get("custom_base_url")
+        custom_model = llm.get("custom_model")
+        merged["base_url"] = custom_base_url if isinstance(custom_base_url, str) else ""
+        merged["model"] = custom_model if isinstance(custom_model, str) else ""
+    elif provider == llm.get("provider"):
         if "base_url" in llm:
             merged["base_url"] = llm["base_url"]
         if "model" in llm:

@@ -150,10 +150,11 @@ def _predict(
     """Grounded prediction for `payload`; ``(reply, None, meta)`` or ``(None, reason, meta)``.
 
     Uses the active provider (``config["llm"]["provider"]``): its preset
-    endpoint/model (config ``base_url``/``model`` overrides for the active
-    provider are honored), with a key resolved by ``engine.keys.resolved_key``:
-    stored key → effective env var → global legacy env var. On a
-    fallback-applicable provider failure (see
+    endpoint/model (for Custom, the destination saved in
+    ``custom_base_url``/``custom_model``; for other providers, config
+    ``base_url``/``model`` overrides while active are honored), with a key
+    resolved by ``engine.keys.resolved_key``: stored key → effective env var.
+    On a fallback-applicable provider failure (see
     ``_fallback_eligible``) with a different ``config["llm"]["fallback_provider"]``
     configured, the fallback provider is tried exactly once.
 
