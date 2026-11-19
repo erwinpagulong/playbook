@@ -29,6 +29,24 @@ exit 0
 
 # Records the pip command line so tests can assert how dependencies are
 # installed, without actually installing anything.
+FAILING_PIP_PYTHON = """#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+  target="$4"
+  mkdir -p "$target/bin"
+  cat > "$target/bin/python" <<'PYEOF'
+#!/bin/sh
+exit 0
+PYEOF
+  cat > "$target/bin/pip" <<'PIPEOF'
+#!/bin/sh
+printf 'simulated pip failure\\n' >&2
+exit 1
+PIPEOF
+  chmod 755 "$target/bin/python" "$target/bin/pip"
+fi
+exit 0
+"""
+
 LOGGING_PYTHON = """#!/bin/sh
 if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
   target="$4"
@@ -80,6 +98,15 @@ def fake_python_dir(tmp_path: Path) -> Path:
     stub_dir.mkdir()
     python = stub_dir / "python3"
     python.write_text(FAKE_PYTHON, encoding="utf-8")
+    python.chmod(0o755)
+    return stub_dir
+
+
+def failing_pip_dir(tmp_path: Path) -> Path:
+    stub_dir = tmp_path / "failpip"
+    stub_dir.mkdir()
+    python = stub_dir / "python3"
+    python.write_text(FAILING_PIP_PYTHON, encoding="utf-8")
     python.chmod(0o755)
     return stub_dir
 
@@ -221,6 +248,24 @@ def test_separate_checkout_success_preserves_unmanaged_files(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert (plugin / ".venv" / "marker").read_text(encoding="utf-8") == "keep me\n"
     assert (plugin / "user-note.txt").read_text(encoding="utf-8") == "mine\n"
+    assert_no_temp_leftovers(tmp_path)
+
+
+def test_separate_checkout_failed_setup_restores_previous_installation(tmp_path):
+    """A failure after the swap (wrappers/venv/pip) must not leave a half-updated plugin."""
+    checkout = tmp_path / "checkout"
+    plugin = tmp_path / "installed"
+    make_checkout(checkout)
+    make_checkout(plugin)
+    (plugin / "App.qml").write_text("local app edit\n", encoding="utf-8")
+    (plugin / "bin").mkdir()
+    (plugin / "bin" / "playbook").write_text("old wrapper\n", encoding="utf-8")
+
+    result = run_installer(checkout / "install.sh", plugin, failing_pip_dir(tmp_path), checkout)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "simulated pip failure" in result.stderr
+    assert (plugin / "App.qml").read_text(encoding="utf-8") == "local app edit\n"
+    assert (plugin / "bin" / "playbook").read_text(encoding="utf-8") == "old wrapper\n"
     assert_no_temp_leftovers(tmp_path)
 
 

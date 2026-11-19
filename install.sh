@@ -6,8 +6,10 @@
 # bin/playbookd and bin/playbook wrappers, and creates a .venv there with
 # the Python dependencies installed. Safe to re-run: when installing from a
 # separate checkout the replacement is staged completely before the old
-# files are swapped out, so a failed copy leaves the previous install intact.
-# The .venv is reused when it already works.
+# files are swapped out, and the backup is kept until wrapper generation,
+# virtualenv setup and dependency installation all succeed. Any earlier
+# failure leaves the previous install intact. The .venv is reused when it
+# already works.
 
 set -euo pipefail
 
@@ -100,9 +102,9 @@ else
         mv -- "$stage/$name" "$PLUGIN_DIR/$name"
     done
 
-    rollback=0
-    rm -rf -- "$stage" "$backup"
-    trap - EXIT
+    # Keep the backup and the EXIT trap armed until setup finishes (wrappers,
+    # venv and pip below). A failure in any later step must still restore the
+    # previous install, not leave a half-updated plugin.
 fi
 
 # Never ship interpreter caches into the plugin dir.
@@ -192,3 +194,6 @@ Reports and config live outside the plugin dir (XDG):
   config: \${XDG_CONFIG_HOME:-~/.config}/crypto-playbook/config.json
   data:   \${XDG_DATA_HOME:-~/.local/share}/crypto-playbook/
 EOF
+
+# Setup completed: the EXIT trap now only removes the staging/backup dirs.
+rollback=0

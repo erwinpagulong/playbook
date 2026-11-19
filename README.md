@@ -105,8 +105,10 @@ install is deterministic and reviewable. `pytest` is test-only: it lives in
 regenerating the locks with `pip-compile --generate-hashes`.
 
 When installing from a separate checkout, the installer stages the replacement
-files and only swaps them in once all copies succeed. A failed or interrupted
-copy therefore leaves the previous installation (and any local edits) intact.
+files and only swaps them in once all copies succeed. It keeps a rollback of
+the previous files until wrapper generation, virtualenv setup and dependency
+installation all succeed, so a failure at any of those steps leaves the
+previous installation (and any local edits) intact.
 
 The QML shell only talks to the daemon on loopback (`127.0.0.1:8099`); it never
 makes a network request itself. Loopback is not access control on a shared
