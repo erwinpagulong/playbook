@@ -47,8 +47,8 @@ class FakeErrorResponse:
 
 def test_explicit_key_is_used(monkeypatch):
     seen = {}
-    def fake_post(url, json, headers, timeout):
-        seen["auth"] = headers["Authorization"]
+    def fake_post(url, **kwargs):
+        seen["auth"] = kwargs["headers"]["Authorization"]
         return FakeResponse({"choices": [{"message": {"content": "{}"}}]})
     monkeypatch.setattr(llm.requests, "post", fake_post)
     llm.call_llm({"base_url": "https://x.test/v1", "model": "m", "api_key_env": "NOPE"}, "p", api_key="sk-explicit")
@@ -57,21 +57,21 @@ def test_explicit_key_is_used(monkeypatch):
 def test_env_fallback_when_no_keys_file(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
     monkeypatch.setattr(llm.requests, "post", lambda *a, **k: FakeResponse({"choices": [{"message": {"content": "{}"}}]}))
-    assert isinstance(llm.call_llm({"api_key_env": "OPENAI_API_KEY"}, "p"), dict)
+    assert isinstance(llm.call_llm({"api_key_env": "OPENAI_API_KEY", "base_url": "https://x.test/v1"}, "p"), dict)
 
 def test_quota_error_is_provider_failure(monkeypatch):
     response = FakeErrorResponse(429, '{"error":{"code":"insufficient_quota"}}')
     def fake_post(*a, **k): raise requests.HTTPError("429", response=response)
     monkeypatch.setattr(llm.requests, "post", fake_post)
     with pytest.raises(llm.LLMProviderError) as ei:
-        llm.call_llm({"api_key_env": "K"}, "p", api_key="v")
+        llm.call_llm({"api_key_env": "K", "base_url": "https://x.test/v1"}, "p", api_key="v")
     assert ei.value.status == 429 and ei.value.marker == "insufficient_quota"
     assert llm.is_provider_failure(ei.value) is True
 
 def test_invalid_json_is_not_provider_failure(monkeypatch):
     monkeypatch.setattr(llm.requests, "post", lambda *a, **k: FakeResponse({"choices": [{"message": {"content": "not json"}}]}))
     with pytest.raises(llm.LLMUnavailable) as ei:
-        llm.call_llm({"api_key_env": "K"}, "p", api_key="v")
+        llm.call_llm({"api_key_env": "K", "base_url": "https://x.test/v1"}, "p", api_key="v")
     assert llm.is_provider_failure(ei.value) is False
 
 
@@ -177,6 +177,173 @@ def test_chat_completion_posts_json_object_with_timeout(monkeypatch):
     assert captured["json"]["model"] == "some-model"
     assert captured["timeout"] == 42
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["allow_redirects"] is False
+
+
+def test_chat_completion_refuses_remote_http_before_sending(monkeypatch):
+    """A config file edited after validation must not send the key in cleartext."""
+    monkeypatch.setenv("OPENAI_API_KEY", "super-secret-key")
+    posted = []
+    monkeypatch.setattr(llm.requests, "post", lambda *a, **k: posted.append(1))
+
+    with pytest.raises(LLMUnavailable) as excinfo:
+        llm._chat_completion(
+            {
+                "base_url": "http://api.example.com/v1",
+                "model": "some-model",
+                "api_key_env": "OPENAI_API_KEY",
+            },
+            "hello",
+        )
+
+    assert posted == []
+    assert "super-secret-key" not in str(excinfo.value)
+
+
+def test_chat_completion_loopback_http_bypasses_proxies(monkeypatch):
+    """The http loopback exception must be a direct connection, never a proxy.
+
+    A proxies dict with ``None`` values is not enough: an ``ALL_PROXY``
+    environment variable populates requests' ``all`` key and is still used
+    unless environment trust is disabled for the call.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+    captured = {}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"ok": 1}'}}]}
+
+    class _FakeSession:
+        def __init__(self):
+            self.trust_env = True
+
+        def post(self, url, **kwargs):
+            captured["trust_env"] = self.trust_env
+            captured["url"] = url
+            captured.update(kwargs)
+            return _FakeResponse()
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(llm.requests, "Session", _FakeSession)
+    # If the implementation still uses the module-level post, this records it
+    # instead of attempting a real connection.
+    monkeypatch.setattr(
+        llm.requests,
+        "post",
+        lambda *a, **k: (captured.setdefault("post_called", True), _FakeResponse())[1],
+    )
+
+    for base_url in (
+        "http://127.0.0.1:11434/v1",
+        "HTTP://127.0.0.1:11434/v1",  # scheme matching is case-insensitive
+    ):
+        captured.clear()
+        llm._chat_completion(
+            {
+                "base_url": base_url,
+                "model": "some-model",
+                "api_key_env": "OPENAI_API_KEY",
+            },
+            "hello",
+        )
+        assert "post_called" not in captured, base_url
+        assert captured["trust_env"] is False, base_url
+        assert captured["closed"] is True, base_url
+        assert captured["allow_redirects"] is False, base_url
+        assert "proxies" not in captured, base_url
+
+
+def test_chat_completion_refuses_backslash_authority_before_sending(monkeypatch):
+    """A backslash authority must not fool the loopback check into sending."""
+    monkeypatch.setenv("OPENAI_API_KEY", "super-secret-key")
+    sent = []
+
+    class _FakeSession:
+        def __init__(self):
+            self.trust_env = True
+            sent.append("session")
+
+        def post(self, *args, **kwargs):
+            sent.append("post")
+
+        def close(self):
+            sent.append("close")
+
+    monkeypatch.setattr(llm.requests, "Session", _FakeSession)
+    monkeypatch.setattr(
+        llm.requests, "post", lambda *a, **k: sent.append("post")
+    )
+
+    with pytest.raises(LLMUnavailable) as excinfo:
+        llm._chat_completion(
+            {
+                "base_url": r"http://attacker.example\@127.0.0.1/v1",
+                "model": "some-model",
+                "api_key_env": "OPENAI_API_KEY",
+            },
+            "hello",
+        )
+
+    assert sent == []
+    assert "super-secret-key" not in str(excinfo.value)
+
+
+def test_chat_completion_loopback_http_reaches_server_despite_all_proxy(monkeypatch):
+    """End-to-end proof that a loopback call is direct while proxies are set."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    seen = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            seen["auth"] = self.headers.get("Authorization")
+            body = json.dumps(
+                {"choices": [{"message": {"content": '{"ok": 1}'}}]}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        content = llm._chat_completion(
+            {
+                "base_url": f"http://127.0.0.1:{server.server_address[1]}/v1",
+                "model": "some-model",
+                "api_key_env": "UNUSED",
+            },
+            "hello",
+            api_key="sk-loopback-direct",
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert content == '{"ok": 1}'
+    assert seen["auth"] == "Bearer sk-loopback-direct"
 
 
 # --- allowed_levels --------------------------------------------------------

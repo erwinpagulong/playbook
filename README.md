@@ -104,11 +104,13 @@ install is deterministic and reviewable. `pytest` is test-only: it lives in
 `requirements.in` / `requirements-dev.in` files are the editable inputs for
 regenerating the locks with `pip-compile --generate-hashes`.
 
-When installing from a separate checkout, the installer stages the replacement
-files and only swaps them in once all copies succeed. It keeps a rollback of the previous files — including the `.venv`, whether it
-is rebuilt or reused — until wrapper generation, virtualenv setup and
-dependency installation all succeed, so a failure at any of those steps
-leaves the previous installation (and any local edits) intact.
+In both install modes the installer backs up the generated runtime — the
+`bin/` wrappers and the `.venv`, whether it is reused or rebuilt — before
+changing it, and restores it if wrapper generation, virtualenv setup or
+dependency installation fails. Installing from a separate checkout also
+stages the replacement source files and only swaps them in once all copies
+succeed. A failure at any step leaves the previous installation (and any
+local edits) intact.
 
 The QML shell only talks to the daemon on loopback (`127.0.0.1:8099`); it never
 makes a network request itself. Loopback is not access control on a shared
@@ -151,6 +153,8 @@ Missing keys fall back to these defaults:
     "fallback_provider": null,
     "base_url": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
+    "custom_base_url": "",
+    "custom_model": "",
     "api_key_env": "OPENAI_API_KEY",
     "timeout_s": 60
   }
@@ -173,9 +177,15 @@ atomically):
 one fails (set it to `null` to disable). Both must be one of the preset ids —
 `openai`, `openrouter`, `deepseek`, `groq`, or `custom` — and the fallback must
 differ from the active provider. Selecting a provider on the *Model* screen
-fills in that preset's `base_url` and `model`; the `custom` preset ships empty
-so you supply your own OpenAI-compatible endpoint (edited on the *API keys*
-screen or in the config). Provider keys are stored per provider in
+fills in that preset's `base_url` and `model`; the `custom` preset has no
+public endpoint, so save its URL and model in the **Custom endpoint** section
+of the *API keys* screen (`llm.custom_base_url` / `llm.custom_model`) first.
+Selecting Custom on the *Model* screen then saves the provider and that
+destination together, and Custom always uses those dedicated fields — never
+the generic `base_url`/`model`, which may still hold the previous provider's
+values. A Custom selection without its own destination is refused, so the
+Custom key cannot be sent to the previous provider's URL. Provider keys are
+stored per provider in
 `$XDG_DATA_HOME/crypto-playbook/keys.json` (default
 `~/.local/share/crypto-playbook/keys.json`), shaped
 `{"providers": {"<id>": "<key>"}}` and kept mode `600`. Keys never appear in the
@@ -190,11 +200,14 @@ wins over the environment. To use a different provider or model, edit
 `llm.provider` / `llm.base_url` / `llm.model` / `llm.timeout_s` in `config.json`
 (or via `set-config`). The `llm.api_key_env` field is kept for compatibility
 and is updated to the provider's variable by the *Model* screen, but it no
-longer selects which key is sent. Remote `base_url` values must use `https` —
-a plaintext `http` endpoint would expose the key in transit; only loopback
-HTTP endpoints are accepted for local testing. There are no `LLM_*`
-environment overrides. When the active provider fails, the daemon retries the
-fallback (if configured) and records which provider answered via
+longer selects which key is sent. Remote endpoints must use `https` — a
+plaintext `http` endpoint would expose the key in transit; only loopback HTTP
+endpoints are accepted for local testing. The rule is enforced when the config
+is saved *and* again immediately before a key is sent, so a hand-edited config
+file cannot bypass it, and a loopback HTTP call is made directly with proxy
+environment settings disabled so it cannot leave the machine. There are no
+`LLM_*` environment overrides. When the active provider fails, the daemon
+retries the fallback (if configured) and records which provider answered via
 `prediction.provider` / `prediction.model` / `prediction.fallback_used` in the
 report.
 

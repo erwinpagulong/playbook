@@ -124,7 +124,7 @@ Item {
             Body { text: view.dataDir; font.pixelSize: Style.font.bodySmall }
             Note { width: parent.width; text: "Reports: JSON for this window plus a markdown twin per report, under reports/. Hand-readable, back them up by copying the folder." }
             Body { text: configPath(); font.pixelSize: Style.font.bodySmall }
-            Note { width: parent.width; text: "Config: coins, interval_minutes, llm.model. The API key is NOT in it — it comes from the environment variable at daemon startup." }
+            Note { width: parent.width; text: "Config: coins, interval_minutes, and the LLM provider/endpoint/model. The API key is NOT in it — stored keys live in a private keys.json (mode 600) under the data dir, and the environment fallback is read at generation time." }
           }
 
           TitledCard {
@@ -132,8 +132,8 @@ Item {
             width: parent.width
             title: "WHAT LEAVES THE MACHINE"
             Note { width: parent.width; text: "Out: public market data — candles from Binance (yfinance when Binance fails) and quote snapshots. These requests name only a public trading pair, nothing about you." }
-            Note { width: parent.width; text: "Out: the report payload — indicators, levels, quotes — sent to the LLM endpoint in your config (llm.base_url, default api.openai.com) so it can write the prediction narrative. Change base_url in the config to keep that traffic elsewhere." }
-            Note { width: parent.width; text: "The API key is sent only to your configured LLM endpoint, in the Authorization header, when a prediction is generated — it is never stored in config, reports, or logs, and never leaves that request. Your files and identity are never sent. Everything else travels over 127.0.0.1." }
+            Note { width: parent.width; text: "Out: the report payload — indicators, levels, quotes — sent to the LLM endpoint in your config (llm.base_url, or llm.custom_base_url for Custom; default api.openai.com) so it can write the prediction narrative. Change the endpoint in the config to keep that traffic elsewhere." }
+            Note { width: parent.width; text: "The API key is sent only to your configured LLM endpoint, in the Authorization header, when a prediction is generated — it is never stored in config, reports, or logs, and never leaves that request. Remote endpoints must use https; a loopback http endpoint is allowed only for local testing and is called directly, with proxy settings disabled. Your files and identity are never sent. Everything else travels over 127.0.0.1." }
           }
 
           TitledCard {

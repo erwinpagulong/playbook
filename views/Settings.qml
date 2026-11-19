@@ -28,7 +28,9 @@ Item {
       if (!intervalField.activeFocus)
         intervalField.text = String(data.interval_minutes === undefined ? "" : data.interval_minutes)
       if (!modelField.activeFocus && data.llm)
-        modelField.text = String(data.llm.model || "")
+        modelField.text = data.llm.provider === "custom"
+          ? String(data.llm.custom_model || "")
+          : String(data.llm.model || "")
     })
   }
   onAppChanged: reload()
@@ -73,7 +75,11 @@ Item {
   function applyModel() {
     var model = modelField.text.trim()
     if (model === "") { view.app.lastError = "model must be a non-empty string"; return }
-    view.postConfig({ llm: { model: model } }, "model: " + model)
+    var patch = { model: model }
+    // Custom keeps its own destination; keep it in sync while it is active.
+    if (view.cfg && view.cfg.llm && view.cfg.llm.provider === "custom")
+      patch.custom_model = model
+    view.postConfig({ llm: patch }, "model: " + model)
   }
 
   function handleKey(e) {

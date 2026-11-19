@@ -103,3 +103,36 @@ def test_only_legacy_global_env_marks_active_provider_keyed(tmp_path, monkeypatc
     for pid in ("openrouter", "deepseek", "groq", "custom"):
         assert rows[pid]["key_set"] is False
         assert rows[pid]["key_hint"] == ""
+
+
+def test_custom_provider_never_inherits_the_active_presets_destination():
+    """Switching to Custom must not reuse the previous provider's URL/model.
+
+    The Custom key lives under CUSTOM_API_KEY; sending it to whatever endpoint
+    was active before would hand the key to the previous provider.
+    """
+    cfg = load_config(None)
+    cfg["llm"]["provider"] = "custom"
+    # The generic fields still hold the previous provider's destination.
+    cfg["llm"]["base_url"] = PRESETS["openai"]["base_url"]
+    cfg["llm"]["model"] = PRESETS["openai"]["model"]
+
+    custom = provider_llm_config("custom", cfg)
+    assert custom["base_url"] == ""
+    assert custom["model"] == ""
+
+
+def test_custom_provider_uses_only_its_own_saved_destination():
+    cfg = load_config(None)
+    cfg["llm"].update(
+        {
+            "provider": "custom",
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-4o-mini",
+            "custom_base_url": "https://custom.example.com/v1",
+            "custom_model": "custom-model",
+        }
+    )
+    custom = provider_llm_config("custom", cfg)
+    assert custom["base_url"] == "https://custom.example.com/v1"
+    assert custom["model"] == "custom-model"

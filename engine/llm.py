@@ -32,8 +32,11 @@ import math
 import os
 import re
 import time
+from urllib.parse import urlsplit
 
 import requests
+
+from engine.config import base_url_problem
 
 #: Every scenario low/high must be within this fraction (0.5%) of an allowed level.
 PRICE_TOLERANCE = 0.005
@@ -187,30 +190,60 @@ def _chat_completion(llm_config: dict, prompt: str, api_key: str | None = None) 
 
     Raises ``LLMUnavailable`` when no key is available (explicit ``api_key``
     argument wins over ``llm_config["api_key_env"]``; both missing/empty
-    raises), and ``LLMProviderError`` when the provider HTTP call fails —
-    carrying ``status`` and a body ``marker`` (``insufficient_quota`` /
-    ``rate_limit``) when present; transport/timeout errors get
-    ``status=None``. The key value is only ever placed in the Authorization
-    header — never logged, printed, or stored.
+    raises), when ``base_url`` is not safe for a bearer key (remote http or
+    no valid http(s) URL — enforced here again, not only when the config is
+    saved), and when the provider HTTP call fails — carrying ``status`` and a
+    body ``marker`` (``insufficient_quota`` / ``rate_limit``) when present;
+    transport/timeout errors get ``status=None``. A loopback http endpoint is
+    called directly, with proxy environment settings disabled and redirects
+    refused, so the key cannot follow a redirect off-machine. The key value
+    is only ever placed in the Authorization header — never logged, printed,
+    or stored.
     """
     key = _resolve_api_key(llm_config, api_key)
     base_url = str(llm_config.get("base_url") or "").rstrip("/")
+    # The config file can be edited on disk, or loaded at daemon start without
+    # going through POST validation. Enforce the key-safety rule at the point
+    # of use too, and never let a proxy turn the loopback http exception into
+    # an off-machine request.
+    problem = base_url_problem(base_url)
+    if problem is not None:
+        raise LLMUnavailable(f"refusing to send the API key: {problem}")
     body = {
         "model": llm_config.get("model"),
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"},
         "temperature": 0.2,
     }
+    request_kwargs = {
+        "json": body,
+        "headers": {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        "timeout": llm_config.get("timeout_s", 60),
+        # Never let a redirect carry the bearer key to another endpoint,
+        # including on the https path where requests would otherwise follow
+        # it by default.
+        "allow_redirects": False,
+    }
     try:
-        response = requests.post(
-            f"{base_url}/chat/completions",
-            json=body,
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
-            timeout=llm_config.get("timeout_s", 60),
-        )
+        if urlsplit(base_url).scheme == "http":
+            # base_url_problem allows http only on loopback. Make that call a
+            # direct connection: an ALL_PROXY/HTTP_PROXY setting (or netrc/CA
+            # environment overrides) could otherwise carry the key off-machine.
+            # A proxies={"http": None} dict is not enough — ALL_PROXY adds the
+            # "all" key, which requests still selects.
+            session = requests.Session()
+            session.trust_env = False
+            try:
+                response = session.post(
+                    f"{base_url}/chat/completions", **request_kwargs
+                )
+            finally:
+                session.close()
+        else:
+            response = requests.post(f"{base_url}/chat/completions", **request_kwargs)
         response.raise_for_status()
     except requests.HTTPError as exc:
         raise _provider_error_from_http(exc) from exc

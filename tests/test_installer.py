@@ -337,3 +337,56 @@ def test_installer_enforces_hashed_requirements(tmp_path):
     args = pip_log.read_text(encoding="utf-8")
     assert "--require-hashes" in args, args
     assert f"-r {plugin}/requirements.txt" in args, args
+
+
+def test_in_place_failed_pip_restores_wrappers_and_reused_venv(tmp_path):
+    """The marketplace (in-place) path must roll back its runtime too."""
+    plugin = tmp_path / "plugin"
+    make_checkout(plugin)
+    (plugin / "App.qml").write_text("local app edit\n", encoding="utf-8")
+    (plugin / "bin").mkdir()
+    (plugin / "bin" / "playbook").write_text("old wrapper\n", encoding="utf-8")
+    venv_bin = plugin / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    python = venv_bin / "python"
+    python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+    pip = venv_bin / "pip"
+    pip.write_text(
+        "#!/bin/sh\n"
+        'root=$(dirname -- "$(dirname -- "$0")")\n'
+        "printf 'new package\\n' > \"$root/sentinel\"\n"
+        "printf 'simulated pip failure\\n' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    pip.chmod(0o755)
+    (plugin / ".venv" / "sentinel").write_text("old package\n", encoding="utf-8")
+
+    result = run_installer(plugin / "install.sh", plugin, fake_python_dir(tmp_path), plugin)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "simulated pip failure" in result.stderr
+    assert (plugin / "bin" / "playbook").read_text(encoding="utf-8") == "old wrapper\n"
+    assert (plugin / ".venv" / "sentinel").read_text(encoding="utf-8") == "old package\n"
+    assert (plugin / "App.qml").read_text(encoding="utf-8") == "local app edit\n"
+    assert_no_temp_leftovers(tmp_path)
+
+
+def test_in_place_failed_rebuild_restores_the_previous_venv(tmp_path):
+    """An in-place venv rebuild that fails must restore the previous runtime."""
+    plugin = tmp_path / "plugin"
+    make_checkout(plugin)
+    (plugin / "bin").mkdir()
+    (plugin / "bin" / "playbook").write_text("old wrapper\n", encoding="utf-8")
+    # Invalid (a symlink-free directory without bin/python) forces a rebuild.
+    (plugin / ".venv").mkdir()
+    (plugin / ".venv" / "marker").write_text("old venv marker\n", encoding="utf-8")
+
+    result = run_installer(plugin / "install.sh", plugin, failing_pip_dir(tmp_path), plugin)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "simulated pip failure" in result.stderr
+    assert (plugin / "bin" / "playbook").read_text(encoding="utf-8") == "old wrapper\n"
+    assert (plugin / ".venv" / "marker").read_text(encoding="utf-8") == "old venv marker\n"
+    assert_no_temp_leftovers(tmp_path)

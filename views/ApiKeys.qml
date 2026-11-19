@@ -7,9 +7,9 @@ import "../components"
 // API keys: one row per provider preset. Keys are write-only here — the
 // daemon never returns one, only a masked hint (`sk-…4e18`) and a set/missing
 // badge — and they live in a private file the daemon reads, never in the
-// config, the reports, or this window. The Custom endpoint row edits the
-// active provider's base URL/model (what the Custom preset needs once it is
-// selected on the Model screen).
+// config, the reports, or this window. The Custom endpoint row saves its own
+// destination in llm.custom_base_url / llm.custom_model; the generic fields
+// are mirrored only while Custom itself is the active provider.
 Item {
   id: view
   property var app: null
@@ -21,8 +21,9 @@ Item {
 
   readonly property var rows: app && Array.isArray(app.providers) ? app.providers : []
   readonly property var llm: app && app.cfg && app.cfg.llm ? app.cfg.llm : ({})
-  readonly property string currentBaseUrl: llm.base_url ? String(llm.base_url) : ""
-  readonly property string currentModel: llm.model ? String(llm.model) : ""
+  readonly property string currentProviderId: llm.provider ? String(llm.provider) : ""
+  readonly property string customBaseUrl: llm.custom_base_url ? String(llm.custom_base_url) : ""
+  readonly property string customModel: llm.custom_model ? String(llm.custom_model) : ""
 
   // Merge the patch into the effective config and post the whole document —
   // the daemon validates the complete object, so sending a partial body
@@ -56,7 +57,15 @@ Item {
     var model = customModelField.text.trim()
     if (!/^https?:\/\//.test(base)) { view.app.lastError = "base URL must start with http:// or https://"; return }
     if (model === "") { view.app.lastError = "model must be a non-empty string"; return }
-    view.postConfig({ llm: { base_url: base, model: model } }, "endpoint: " + base)
+    var patch = { custom_base_url: base, custom_model: model }
+    // Custom keeps its own destination. Keep the active config's generic
+    // fields in sync only while Custom is active: editing this section must
+    // never rewrite the endpoint another provider is using.
+    if (view.currentProviderId === "custom") {
+      patch.base_url = base
+      patch.model = model
+    }
+    view.postConfig({ llm: patch }, "custom endpoint: " + base)
   }
 
   function handleKey(e) {
@@ -215,7 +224,7 @@ Item {
         app: view.app
         width: parent.width
         title: "CUSTOM ENDPOINT"
-        Caption { text: "llm.base_url · llm.model" }
+        Caption { text: "llm.custom_base_url · llm.custom_model" }
         TextField {
           id: customBaseField
           width: parent.width
@@ -228,7 +237,7 @@ Item {
           Keys.onEnterPressed: view.applyCustom()
           Keys.onEscapePressed: view.forceActiveFocus()
         }
-        Binding { target: customBaseField; property: "text"; value: view.currentBaseUrl; when: !customBaseField.activeFocus }
+        Binding { target: customBaseField; property: "text"; value: view.customBaseUrl; when: !customBaseField.activeFocus }
         TextField {
           id: customModelField
           width: parent.width
@@ -241,9 +250,9 @@ Item {
           Keys.onEnterPressed: view.applyCustom()
           Keys.onEscapePressed: view.forceActiveFocus()
         }
-        Binding { target: customModelField; property: "text"; value: view.currentModel; when: !customModelField.activeFocus }
+        Binding { target: customModelField; property: "text"; value: view.customModel; when: !customModelField.activeFocus }
         Apply { text: "Apply"; onClicked: view.applyCustom() }
-        Note { width: parent.width; text: "These apply to the active provider's config — select Custom on the Model screen to use your own OpenAI-compatible endpoint. The daemon validates them on every write." }
+        Note { width: parent.width; text: "The Custom provider's own endpoint and model, stored separately from the active provider's config. Fill them in here, then select Custom on the Model screen; the provider and this destination are saved together. The daemon validates them on every write." }
       }
     }
   }

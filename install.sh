@@ -4,12 +4,13 @@
 # Copies the plugin into ~/.config/omarchy/plugins/windong.cryptoplaybook/
 # (or sets it up in place when run from an installed copy), generates the
 # bin/playbookd and bin/playbook wrappers, and creates a .venv there with
-# the Python dependencies installed. Safe to re-run: when installing from a
-# separate checkout the replacement is staged completely before the old
-# files are swapped out, and the backup is kept until wrapper generation,
-# virtualenv setup and dependency installation all succeed. Any earlier
-# failure leaves the previous install intact. The .venv is reused when it
-# already works.
+# the Python dependencies installed. Safe to re-run. In both modes the
+# generated runtime (wrappers and .venv) is backed up before it is replaced,
+# and that backup is kept until wrapper generation, virtualenv setup and
+# dependency installation all succeed; any earlier failure restores the
+# previous runtime. Installing from a separate checkout also stages the
+# replacement source files before swapping them in. The .venv is reused when
+# it already works.
 
 set -euo pipefail
 
@@ -26,14 +27,17 @@ command -v python3 >/dev/null 2>&1 || die "python3 is required but not on PATH"
 log "Installing $PLUGIN_ID into $PLUGIN_DIR"
 
 # A marketplace install clones into the destination and runs this same script
-# from there. Source and destination are then identical: deleting "managed"
-# paths first would destroy the files we are about to copy (and any local
-# edits), then fail. In that case only generate the wrappers and the venv.
+# from there. Source and destination are then identical: copying files onto
+# themselves is pointless, so only the generated runtime (bin/ wrappers and
+# .venv) changes. Both modes back up that runtime before touching it and
+# restore it if wrapper generation, venv setup or pip fails.
 same_dir() {
     [ "$(readlink -f -- "$1")" = "$(readlink -f -- "$2")" ]
 }
 
+in_place=0
 if same_dir "$REPO_ROOT" "$PLUGIN_DIR"; then
+    in_place=1
     log "Running in place; keeping the files already in $PLUGIN_DIR"
     for required in manifest.json App.qml Service.qml BarWidget.qml requirements.txt; do
         [ -f "$PLUGIN_DIR/$required" ] || die "missing $required in $PLUGIN_DIR"
@@ -41,52 +45,56 @@ if same_dir "$REPO_ROOT" "$PLUGIN_DIR"; then
     for required in views components engine samples; do
         [ -d "$PLUGIN_DIR/$required" ] || die "missing $required/ in $PLUGIN_DIR"
     done
+fi
+
+mkdir -p "$PLUGIN_DIR"
+parent=$(dirname -- "$PLUGIN_DIR")
+backup=$(mktemp -d "$parent/.cryptoplaybook-backup.XXXXXX") || die "cannot create backup directory"
+stage=""
+rollback=1
+replace=()
+restore=()
+
+# Paths replaced or created by this run are removed on failure; the originals
+# kept in the backup are moved back. Restore entries are only recorded after
+# the original really made it into the backup.
+cleanup() {
+    status=$?
+    if [ "$rollback" -eq 1 ]; then
+        for name in "${replace[@]}"; do
+            rm -rf -- "${PLUGIN_DIR:?}/$name" || true
+        done
+        for name in "${restore[@]}"; do
+            mv -- "$backup/$name" "${PLUGIN_DIR:?}/$name" || true
+        done
+    fi
+    [ -z "$stage" ] || rm -rf -- "$stage" || true
+    rm -rf -- "$backup" || true
+    exit "$status"
+}
+trap cleanup EXIT
+
+if [ "$in_place" -eq 1 ]; then
+    # Marketplace/in-place: the source files in $PLUGIN_DIR are the installed
+    # files, so only the generated bin/ runtime is replaced. Keep the previous
+    # wrappers until setup succeeds.
+    if [ -e "$PLUGIN_DIR/bin" ]; then
+        mv -- "$PLUGIN_DIR/bin" "$backup/bin"
+        restore+=("bin")
+    fi
+    replace+=("bin")
 else
     # Separate checkout: stage the full replacement before touching the
     # installed copy. Deleting first would lose the previous install (and any
     # local edits) if a later copy failed, so copies go to a staging directory
     # and the old paths are only swapped out once every copy has succeeded.
     log "Copying plugin files"
-    mkdir -p "$PLUGIN_DIR"
-    parent=$(dirname -- "$PLUGIN_DIR")
 
     managed=(
         manifest.json BarWidget.qml App.qml Service.qml requirements.txt
         views components engine samples bin
     )
     stage=$(mktemp -d "$parent/.cryptoplaybook-stage.XXXXXX") || die "cannot create staging directory"
-    backup=$(mktemp -d "$parent/.cryptoplaybook-backup.XXXXXX") || {
-        rm -rf -- "$stage"
-        die "cannot create backup directory"
-    }
-
-    # If anything fails after staging, restore the previous installation.
-    rollback=1
-    swapped=0
-    venv_moved=0
-    venv_created=0
-    moved=()
-    cleanup() {
-        if [ "$rollback" -eq 1 ]; then
-            # Only paths moved into place (swapped) can be partial replacements.
-            if [ "$swapped" -eq 1 ]; then
-                for name in "${managed[@]}"; do
-                    rm -rf -- "$PLUGIN_DIR/$name"
-                done
-                # Discard a half-built venv; the old one is restored below.
-                if [ "$venv_moved" -eq 1 ] || [ "$venv_created" -eq 1 ]; then
-                    rm -rf -- "$PLUGIN_DIR/.venv"
-                fi
-            fi
-            if [ ${#moved[@]} -gt 0 ]; then
-                for name in "${moved[@]}"; do
-                    mv -- "$backup/$name" "$PLUGIN_DIR/$name"
-                done
-            fi
-        fi
-        rm -rf -- "$stage" "$backup"
-    }
-    trap cleanup EXIT
 
     cp -a "$REPO_ROOT/manifest.json" "$REPO_ROOT/BarWidget.qml" \
           "$REPO_ROOT/App.qml" "$REPO_ROOT/Service.qml" \
@@ -99,18 +107,15 @@ else
     for name in "${managed[@]}"; do
         if [ -e "$PLUGIN_DIR/$name" ]; then
             mv -- "$PLUGIN_DIR/$name" "$backup/$name"
-            moved+=("$name")
+            restore+=("$name")
         fi
     done
-    swapped=1
+    replace+=("bin")
     for name in manifest.json BarWidget.qml App.qml Service.qml requirements.txt \
                 views components engine samples; do
         mv -- "$stage/$name" "$PLUGIN_DIR/$name"
+        replace+=("$name")
     done
-
-    # Keep the backup and the EXIT trap armed until setup finishes (wrappers,
-    # venv and pip below). A failure in any later step must still restore the
-    # previous install, not leave a half-updated plugin.
 fi
 
 # Never ship interpreter caches into the plugin dir.
@@ -159,27 +164,25 @@ venv_ok() {
 
 if ! venv_ok; then
     log "Creating virtualenv at $PLUGIN_DIR/.venv"
-    if [ -n "${backup:-}" ] && [ -e "$PLUGIN_DIR/.venv" ]; then
-        # Separate checkout: keep the old venv in the backup so a failed
-        # rebuild or pip install can restore a working runtime.
+    if [ -e "$PLUGIN_DIR/.venv" ]; then
+        # Keep the old venv in the backup so a failed rebuild or pip install
+        # can restore a working runtime.
         mv -- "$PLUGIN_DIR/.venv" "$backup/.venv"
-        moved+=(".venv")
-        venv_moved=1
-    else
-        rm -rf "$PLUGIN_DIR/.venv"
-        # A fresh venv has nothing to restore, but must still be discarded if
-        # setup fails so no half-built runtime is left behind.
-        if [ -n "${backup:-}" ]; then
-            venv_created=1
-        fi
+        restore+=(".venv")
     fi
+    # A fresh venv has nothing to restore, but must still be discarded if
+    # setup fails so no half-built runtime is left behind.
+    replace+=(".venv")
     python3 -m venv --copies "$PLUGIN_DIR/.venv"
-elif [ -n "${backup:-}" ] && [ -e "$PLUGIN_DIR/.venv" ]; then
+elif [ -e "$PLUGIN_DIR/.venv" ]; then
     # Reused venv: pip can partially change its packages, so snapshot it too.
+    # The copy goes to a temporary name first; a partial copy is never
+    # restored over the live venv.
     log "Snapshotting existing virtualenv for rollback"
-    cp -a -- "$PLUGIN_DIR/.venv" "$backup/.venv"
-    moved+=(".venv")
-    venv_moved=1
+    cp -a -- "$PLUGIN_DIR/.venv" "$backup/.venv.new"
+    mv -- "$backup/.venv.new" "$backup/.venv"
+    restore+=(".venv")
+    replace+=(".venv")
 fi
 if [ -L "$PLUGIN_DIR/.venv/lib64" ]; then
     rm -f "$PLUGIN_DIR/.venv/lib64"
