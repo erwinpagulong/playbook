@@ -275,6 +275,50 @@ def test_separate_checkout_failed_setup_restores_previous_installation(tmp_path)
     assert_no_temp_leftovers(tmp_path)
 
 
+def test_failed_pip_restores_reused_venv(tmp_path):
+    """A failed pip on an update must restore the reused venv's packages."""
+    checkout = tmp_path / "checkout"
+    plugin = tmp_path / "installed"
+    make_checkout(checkout)
+    make_checkout(plugin)
+    venv_bin = plugin / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    python = venv_bin / "python"
+    python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+    pip = venv_bin / "pip"
+    pip.write_text(
+        "#!/bin/sh\n"
+        'root=$(dirname -- "$(dirname -- "$0")")\n'
+        "printf 'new package\\n' > \"$root/sentinel\"\n"
+        "printf 'simulated pip failure\\n' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    pip.chmod(0o755)
+    (plugin / ".venv" / "sentinel").write_text("old package\n", encoding="utf-8")
+
+    result = run_installer(checkout / "install.sh", plugin, fake_python_dir(tmp_path), checkout)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "simulated pip failure" in result.stderr
+    assert (plugin / ".venv" / "sentinel").read_text(encoding="utf-8") == "old package\n"
+    assert_no_temp_leftovers(tmp_path)
+
+
+def test_failed_pip_discards_fresh_venv(tmp_path):
+    """A failed pip on a fresh install must not leave a half-built venv."""
+    checkout = tmp_path / "checkout"
+    plugin = tmp_path / "installed"
+    make_checkout(checkout)
+    make_checkout(plugin)
+
+    result = run_installer(checkout / "install.sh", plugin, failing_pip_dir(tmp_path), checkout)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "simulated pip failure" in result.stderr
+    assert not (plugin / ".venv").exists()
+    assert_no_temp_leftovers(tmp_path)
+
+
 def test_installer_enforces_hashed_requirements(tmp_path):
     """The installer must give pip the hash-enforcing flag and the lock file."""
     checkout = tmp_path / "checkout"
