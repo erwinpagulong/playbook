@@ -64,6 +64,7 @@ else
     rollback=1
     swapped=0
     venv_moved=0
+    venv_created=0
     moved=()
     cleanup() {
         if [ "$rollback" -eq 1 ]; then
@@ -73,7 +74,7 @@ else
                     rm -rf -- "$PLUGIN_DIR/$name"
                 done
                 # Discard a half-built venv; the old one is restored below.
-                if [ "$venv_moved" -eq 1 ]; then
+                if [ "$venv_moved" -eq 1 ] || [ "$venv_created" -eq 1 ]; then
                     rm -rf -- "$PLUGIN_DIR/.venv"
                 fi
             fi
@@ -166,8 +167,19 @@ if ! venv_ok; then
         venv_moved=1
     else
         rm -rf "$PLUGIN_DIR/.venv"
+        # A fresh venv has nothing to restore, but must still be discarded if
+        # setup fails so no half-built runtime is left behind.
+        if [ -n "${backup:-}" ]; then
+            venv_created=1
+        fi
     fi
     python3 -m venv --copies "$PLUGIN_DIR/.venv"
+elif [ -n "${backup:-}" ] && [ -e "$PLUGIN_DIR/.venv" ]; then
+    # Reused venv: pip can partially change its packages, so snapshot it too.
+    log "Snapshotting existing virtualenv for rollback"
+    cp -a -- "$PLUGIN_DIR/.venv" "$backup/.venv"
+    moved+=(".venv")
+    venv_moved=1
 fi
 if [ -L "$PLUGIN_DIR/.venv/lib64" ]; then
     rm -f "$PLUGIN_DIR/.venv/lib64"
