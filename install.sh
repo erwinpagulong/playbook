@@ -6,8 +6,10 @@
 # bin/playbookd and bin/playbook wrappers, and creates a .venv there with
 # the Python dependencies installed. Safe to re-run: when installing from a
 # separate checkout the replacement is staged completely before the old
-# files are swapped out, so a failed copy leaves the previous install intact.
-# The .venv is reused when it already works.
+# files are swapped out, and the backup is kept until wrapper generation,
+# virtualenv setup and dependency installation all succeed. Any earlier
+# failure leaves the previous install intact. The .venv is reused when it
+# already works.
 
 set -euo pipefail
 
@@ -61,6 +63,7 @@ else
     # If anything fails after staging, restore the previous installation.
     rollback=1
     swapped=0
+    venv_moved=0
     moved=()
     cleanup() {
         if [ "$rollback" -eq 1 ]; then
@@ -69,6 +72,10 @@ else
                 for name in "${managed[@]}"; do
                     rm -rf -- "$PLUGIN_DIR/$name"
                 done
+                # Discard a half-built venv; the old one is restored below.
+                if [ "$venv_moved" -eq 1 ]; then
+                    rm -rf -- "$PLUGIN_DIR/.venv"
+                fi
             fi
             if [ ${#moved[@]} -gt 0 ]; then
                 for name in "${moved[@]}"; do
@@ -100,9 +107,9 @@ else
         mv -- "$stage/$name" "$PLUGIN_DIR/$name"
     done
 
-    rollback=0
-    rm -rf -- "$stage" "$backup"
-    trap - EXIT
+    # Keep the backup and the EXIT trap armed until setup finishes (wrappers,
+    # venv and pip below). A failure in any later step must still restore the
+    # previous install, not leave a half-updated plugin.
 fi
 
 # Never ship interpreter caches into the plugin dir.
@@ -151,7 +158,15 @@ venv_ok() {
 
 if ! venv_ok; then
     log "Creating virtualenv at $PLUGIN_DIR/.venv"
-    rm -rf "$PLUGIN_DIR/.venv"
+    if [ -n "${backup:-}" ] && [ -e "$PLUGIN_DIR/.venv" ]; then
+        # Separate checkout: keep the old venv in the backup so a failed
+        # rebuild or pip install can restore a working runtime.
+        mv -- "$PLUGIN_DIR/.venv" "$backup/.venv"
+        moved+=(".venv")
+        venv_moved=1
+    else
+        rm -rf "$PLUGIN_DIR/.venv"
+    fi
     python3 -m venv --copies "$PLUGIN_DIR/.venv"
 fi
 if [ -L "$PLUGIN_DIR/.venv/lib64" ]; then
@@ -163,6 +178,10 @@ log "Installing Python dependencies (this can take a minute on first run)"
 # in requirements-dev.txt and never installed here.
 "$PLUGIN_DIR/.venv/bin/pip" install --disable-pip-version-check --require-hashes \
     -r "$PLUGIN_DIR/requirements.txt"
+
+# Setup (wrappers, venv, dependencies) succeeded; display output below cannot
+# leave a partial install, so stop treating later failures as rollback-worthy.
+rollback=0
 
 cat <<EOF
 
