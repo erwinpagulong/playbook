@@ -143,6 +143,30 @@ def test_validation_failure_gets_one_corrective_retry(monkeypatch, tmp_path):
     assert "ALLOWED_PRICE_LEVELS" in prompts[1]
 
 
+def test_banned_phrase_retry_names_the_phrase(monkeypatch, tmp_path):
+    """When validation rejects a banned phrase, the corrective retry must tell
+    the model which phrase to remove; otherwise the same reply is repeated and
+    the report ends up with no prediction (and a red dashboard alert)."""
+    monkeypatch.setattr(data, "fetch_candles", lambda *a, **k: [FLAT_CANDLE] * 210)
+    prompts = []
+
+    def fake_call(cfg, prompt, api_key=None):
+        prompts.append(prompt)
+        bad = valid_prediction()
+        bad["bottom_line"] = "This bounce is guaranteed — educational only."
+        if len(prompts) == 1:
+            return bad
+        correction = prompt.split("CORRECTION", 1)[-1] if "CORRECTION" in prompt else ""
+        # a model can only drop the banned word if the retry actually names it;
+        # the original prompt alone mentions 'guaranteed' in its generic rules
+        return valid_prediction() if "guaranteed" in correction.lower() else bad
+
+    monkeypatch.setattr(llm, "call_llm", fake_call)
+    result = generate_report("BTC/USDT", load_config(None), tmp_path)
+    assert len(prompts) == 2
+    assert result["report"]["prediction"]["available"] is True
+
+
 # --- brief: fetch failure falls back to cache -------------------------------
 
 def test_fetch_failure_uses_cache(monkeypatch, tmp_path):
